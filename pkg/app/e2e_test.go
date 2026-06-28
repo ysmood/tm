@@ -64,6 +64,7 @@ func TestMenuRendersUnderPTY(t *testing.T) {
 
 	pt, err := gopty.New()
 	g.E(err)
+	g.E(pt.Resize(120, 40)) // the v2 cell renderer needs a non-zero screen size
 
 	defer func() { _ = pt.Close() }()
 
@@ -141,12 +142,13 @@ func TestRelayUnderPTY(t *testing.T) {
 
 	pt, err := gopty.New()
 	g.E(err)
+	g.E(pt.Resize(120, 40)) // the v2 cell renderer needs a non-zero screen size
 
 	defer func() { _ = pt.Close() }()
 
 	c := pt.Command(bin, "__attach", "--id", "rly", "--hist", "1") // hist=1 -> HistAll
 
-	c.Env = append(os.Environ(), "CI=1") // skip termenv's init query (see relayEnv)
+	c.Env = os.Environ() // no CI=1 workaround needed on Bubble Tea v2
 	g.E(c.Start())
 
 	buf := &safeBuilder{}
@@ -182,6 +184,7 @@ func TestMenuCreateAttachDetach(t *testing.T) {
 
 	pt, err := gopty.New()
 	g.E(err)
+	g.E(pt.Resize(120, 40)) // the v2 cell renderer needs a non-zero screen size
 
 	defer func() { _ = pt.Close() }()
 

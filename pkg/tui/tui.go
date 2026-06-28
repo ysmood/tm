@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
 )
@@ -194,7 +194,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, m.attach(msg.id, proto.HistNone, 0)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch m.mode {
 		case modeList:
 			return m.updateList(msg)
@@ -220,7 +220,7 @@ const (
 	keyEnter = "enter"
 )
 
-func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", keyEsc:
 		m.quit = true
@@ -248,8 +248,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 	default:
-		if len(msg.Runes) > 0 {
-			m.query += string(msg.Runes)
+		if msg.Text != "" {
+			m.query += msg.Text
 			m.applyFilter()
 		}
 
@@ -340,7 +340,7 @@ func (m *Model) enterNamespaceChoose(p choosePurpose) {
 	m.choices = ch
 }
 
-func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case keyEsc:
 		m.mode = modeList
@@ -412,7 +412,7 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateChoose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateChoose(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case keyEsc:
 		m.mode = modeList
@@ -497,20 +497,25 @@ func (m Model) submitChoose(ch choice) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View satisfies tea.Model.
-func (m Model) View() string {
+// View satisfies tea.Model. The menu runs in the alternate screen so the
+// relayed shell (run via tea.ExecProcess) owns the main screen's scrollback.
+func (m Model) View() tea.View {
 	if m.quit {
-		return ""
+		return tea.View{}
 	}
+
+	var content string
 
 	switch m.mode {
 	case modeInput:
-		return m.viewInput()
+		content = m.viewInput()
 	case modeChoose:
-		return m.viewChoose()
+		content = m.viewChoose()
 	default:
-		return m.viewList()
+		content = m.viewList()
 	}
+
+	return tea.View{Content: content, AltScreen: true}
 }
 
 const maxRows = 15
@@ -593,9 +598,7 @@ type theme struct {
 	status lipgloss.Style
 }
 
-// styles builds the lipgloss styles lazily on first render. Doing this eagerly
-// at package init would make lipgloss query the terminal (and read stdin) for
-// every tm invocation — including the relay, which must own stdin uncontested.
+// styles builds the lipgloss styles once, on first render.
 var styles = sync.OnceValue(func() theme {
 	return theme{
 		title:  lipgloss.NewStyle().Bold(true),

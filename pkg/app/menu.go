@@ -6,10 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/ysmood/tm/pkg/attach"
 	"github.com/ysmood/tm/pkg/config"
 	"github.com/ysmood/tm/pkg/naming"
@@ -24,41 +23,12 @@ type controller struct{ st *store.Store }
 // AttachCmd builds the `tm __attach` relay command for a session.
 func (c *controller) AttachCmd(id string, hist proto.HistMode, lines uint32) *exec.Cmd {
 	self, _ := os.Executable()
-	cmd := exec.Command(self, "__attach",
+
+	return exec.Command(self, "__attach",
 		"--id", id,
 		"--hist", strconv.Itoa(int(hist)),
 		"--lines", strconv.Itoa(int(lines)),
 	)
-	cmd.Env = relayEnv()
-
-	return cmd
-}
-
-// relayEnv is the process environment for the relay. It forces CI=1 so that
-// lipgloss/termenv (pulled in transitively via Bubble Tea) treat the relay as
-// non-interactive and skip the init-time terminal color query — that query
-// reads stdin for up to termenv.OSCTimeout (5s) and would swallow the user's
-// keystrokes. The relay never renders styled output, so disabling color is a
-// no-op for it.
-//
-// This is the known upstream issue charmbracelet/bubbletea#1572: tea_init.go
-// calls lipgloss.HasDarkBackground() during package init, emitting OSC/DSR and
-// reading stdin before main() even for code paths that never run a Program. It
-// is fixed in the v2 packages; CI=1 is the contained workaround for v1.
-func relayEnv() []string {
-	src := os.Environ()
-
-	env := make([]string, 0, len(src)+1)
-
-	for _, e := range src {
-		if strings.HasPrefix(e, "CI=") {
-			continue
-		}
-
-		env = append(env, e)
-	}
-
-	return append(env, "CI=1")
 }
 
 // DefaultSessionName proposes a unique default name for a new session in ns.
@@ -115,7 +85,7 @@ func Run() error {
 
 	_ = st.Prune(func(s store.Session) bool { return s.PID <= 0 || processAlive(s.PID) })
 
-	prog := tea.NewProgram(tui.New(st, &controller{st: st}), tea.WithAltScreen())
+	prog := tea.NewProgram(tui.New(st, &controller{st: st}))
 	_, err = prog.Run()
 
 	return err

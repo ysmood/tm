@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/ysmood/got"
 	"github.com/ysmood/tm/pkg/config"
 	"github.com/ysmood/tm/pkg/proto"
@@ -34,15 +34,15 @@ func send(m Model, msg tea.Msg) Model {
 
 func typeStr(m Model, s string) Model {
 	for _, r := range s {
-		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = send(m, tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 
 	return m
 }
 
 var (
-	keyEnterMsg = tea.KeyMsg{Type: tea.KeyEnter}
-	keyDownMsg  = tea.KeyMsg{Type: tea.KeyDown}
+	keyEnterMsg = tea.KeyPressMsg{Code: tea.KeyEnter}
+	keyDownMsg  = tea.KeyPressMsg{Code: tea.KeyDown}
 )
 
 func has(list []string, v string) bool {
