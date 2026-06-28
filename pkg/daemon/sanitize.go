@@ -7,19 +7,28 @@ const (
 	bel = 0x07
 )
 
-// sanitizeReplay strips terminal *query* sequences from recorded output before
-// it is replayed to a live terminal on attach.
+// sanitizeReplay strips, from recorded output before it is replayed to a live
+// terminal on attach, two kinds of sequence: reply-soliciting *queries* and
+// display-*clears*.
 //
-// The scrollback is the raw PTY output, so it contains every escape sequence the
-// session's programs emitted — including capability probes: DECRQM (CSI ? Ps $p),
-// DSR (CSI 6n), Device Attributes (CSI c), the Kitty keyboard query (CSI ? u),
-// OSC color queries (OSC 11 ; ? ST) and XTGETTCAP/DECRQSS (DCS + q / $ q). Those
-// solicit a reply. Replaying them makes the attaching terminal answer, and the
-// answers arrive on the relay's stdin and get forwarded into the session as if
-// typed — surfacing as stray bytes like "2026;2$y2027;0$y1u" at the prompt.
+// Queries: the scrollback is the raw PTY output, so it contains every escape
+// sequence the session's programs emitted — including capability probes: DECRQM
+// (CSI ? Ps $p), DSR (CSI 6n), Device Attributes (CSI c), the Kitty keyboard
+// query (CSI ? u), OSC color queries (OSC 11 ; ? ST) and XTGETTCAP/DECRQSS (DCS
+// + q / $ q). Those solicit a reply. Replaying them makes the attaching terminal
+// answer, and the answers arrive on the relay's stdin and get forwarded into the
+// session as if typed — surfacing as stray bytes like "2026;2$y2027;0$y1u" at
+// the prompt.
 //
-// Everything else — text, SGR, cursor motion, OSC title/color *sets*, the soft
-// reset — passes through untouched, so the replayed screen still looks right.
+// Clears: replaying history rebuilds the terminal's scrollback, so a recorded
+// erase-the-screen (ED2, CSI 2 J) or erase-the-scrollback (ED3, CSI 3 J) wipes
+// out the very history being shown — `clear` emits both, so a single `clear`
+// anywhere in the log made "all history" come back blank. They are dropped (see
+// isClearDisplay).
+//
+// Everything else — text, SGR, cursor motion, cursor-relative erases, OSC
+// title/color *sets*, the soft reset — passes through untouched, so the replayed
+// screen still looks right.
 func sanitizeReplay(p []byte) []byte {
 	out := make([]byte, 0, len(p))
 
@@ -87,9 +96,13 @@ func scanCSI(p []byte) (n int, drop, complete bool) {
 		i++
 	}
 
+	paramStart := i
+
 	for i < len(p) && p[i] >= 0x30 && p[i] <= 0x3f {
 		i++
 	}
+
+	params := p[paramStart:i]
 
 	intermediateStart := i
 
@@ -110,7 +123,20 @@ func scanCSI(p []byte) (n int, drop, complete bool) {
 		return i, false, true // malformed; not a query
 	}
 
-	return i, isCSIQuery(private, intermediates, final), true
+	return i, isCSIQuery(private, intermediates, final) || isClearDisplay(private, params, final), true
+}
+
+// isClearDisplay reports whether a CSI erases content that lives in the replayed
+// scrollback: ED2 (CSI 2 J, erase the whole screen) or ED3 (CSI 3 J, erase the
+// scrollback buffer). History is replayed on attach to rebuild the terminal's
+// scrollback, so replaying these destroys the very history being shown — macOS
+// `clear` emits CSI 3 J then CSI 2 J, which left "all history" blank.
+//
+// Cursor-relative erases — ED0/ED1 (CSI J / CSI 1 J) and EL (CSI K) — are kept:
+// shells emit them constantly to redraw the prompt and edit line, and on a linear
+// replay (the cursor sits at the end of the text) they erase nothing meaningful.
+func isClearDisplay(private byte, params []byte, final byte) bool {
+	return private == 0 && final == 'J' && (string(params) == "2" || string(params) == "3")
 }
 
 // isCSIQuery reports whether a parsed CSI sequence solicits a reply.
