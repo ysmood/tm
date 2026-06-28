@@ -10,7 +10,7 @@ Its cli is by design without any arguments, so you can just type `tm` and hit en
 tm
 ```
 
-It will enter cli interactive mode, it will list all the sessions and commands you can use.
+It will enter [cli interactive mode](https://github.com/charmbracelet/bubbletea), it will list all the sessions and commands you can use.
 tm will use vscode like [fuzzy search](https://github.com/sahilm/fuzzy) to help you filter through them.
 
 ### Create a new session
