@@ -286,3 +286,116 @@ func TestMenuCreateAttachDetach(t *testing.T) {
 
 	g.E(c.Wait()) // detaching leaves tm (the session keeps running in the background)
 }
+
+// TestMenuReattachCycle drives the real menu through repeated detach/re-attach
+// cycles to prove a session survives detaching and can be picked back out of the
+// menu's session list more than once. It creates a session and runs a command,
+// then detaches (Ctrl-\ leaves tm with the session still running), and twice more
+// relaunches tm on the same terminal, selects the session from the list, and runs
+// another command. Each marker (stepN-42 from "$((6*7))") is executed output from
+// the session's own shell, not the echoed input, so it only appears if that
+// attach actually reached the still-live session.
+func TestMenuReattachCycle(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(180 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmra")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+	g.Setenv("TM_HOME", t.TempDir())
+	g.Setenv("XDG_RUNTIME_DIR", rt)
+	killLeftoverDaemons(g)
+
+	bin := buildTM(g, t)
+
+	// Each tm invocation is the user launching tm again in their terminal, so it
+	// gets its own PTY: go-pty closes the slave once a command exits, and the
+	// detached session daemon is what actually persists between runs. pt and buf
+	// always point at the current run; send writes to it.
+	var (
+		pt  gopty.Pty
+		buf *safeBuilder
+	)
+
+	defer func() {
+		if pt != nil {
+			_ = pt.Close()
+		}
+	}()
+
+	send := func(s string) {
+		_, werr := pt.Write([]byte(s))
+		g.E(werr)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// launch starts a fresh tm on a new PTY and returns its command.
+	launch := func() *gopty.Cmd {
+		if pt != nil {
+			_ = pt.Close()
+		}
+
+		np, perr := gopty.New()
+		g.E(perr)
+		g.E(np.Resize(120, 40)) // the v2 cell renderer needs a non-zero screen size
+		pt = np
+
+		c := pt.Command(bin)
+		c.Env = os.Environ()
+		g.E(c.Start())
+
+		buf = &safeBuilder{}
+		go func(b *safeBuilder, p gopty.Pty) { _, _ = io.Copy(b, p) }(buf, pt)
+
+		return c
+	}
+
+	// --- create a new session and attach to it ---
+	c := launch()
+
+	g.True(waitForText(buf, "new session", 10*time.Second))
+
+	send("ns\r") // filter to [new session] and select it
+	g.True(waitForText(buf, "New session name", 10*time.Second))
+
+	send("\r")                          // accept the default name -> spawn + attach
+	time.Sleep(1500 * time.Millisecond) // let the shell come up
+
+	send("echo step1-$((6*7))\r")
+	g.Desc("first attach: %q", buf.String()).True(waitForText(buf, "step1-42", 15*time.Second))
+
+	// The daemon recorded the session under its generated name; we use the name
+	// to confirm the row is listed when we come back to the menu.
+	p, err := config.New()
+	g.E(err)
+	sessions, err := store.New(p).ListSessions()
+	g.E(err)
+	g.Len(sessions, 1)
+	name := sessions[0].Name
+
+	_, err = pt.Write([]byte{0x1c}) // detach -> tm exits to the launching shell
+	g.E(err)
+	g.E(c.Wait())
+
+	// --- re-attach from the menu twice, each time confirming the live shell ---
+	for i, m := range []string{"step2", "step3"} {
+		c = launch()
+
+		g.Desc("relaunch %d should list session %q: %q", i, name, buf.String()).
+			True(waitForText(buf, name, 10*time.Second))
+
+		send("\r") // the cursor starts on the first session; select it
+		g.Desc("relaunch %d should offer scrollback: %q", i, buf.String()).
+			True(waitForText(buf, "All history", 10*time.Second))
+
+		send("\r")                          // attach with full scrollback
+		time.Sleep(1000 * time.Millisecond) // let the relay re-attach
+
+		send("echo " + m + "-$((6*7))\r")
+		g.Desc("re-attach %d: %q", i, buf.String()).True(waitForText(buf, m+"-42", 15*time.Second))
+
+		_, err = pt.Write([]byte{0x1c}) // detach again -> tm exits
+		g.E(err)
+		g.E(c.Wait())
+	}
+}
