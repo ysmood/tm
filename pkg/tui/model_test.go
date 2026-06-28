@@ -90,8 +90,9 @@ func TestModelUseNamespace(t *testing.T) {
 	m := New(st, fakeCtrl{})
 
 	m = typeStr(m, "un")
-	m = send(m, keyEnterMsg) // select [use namespace] -> choose mode
-	g.Eq(m.mode, modeChoose)
+	m = send(m, keyEnterMsg) // select [use namespace] -> namespace picker
+	g.Eq(m.mode, modePick)
+	g.Eq(m.pickFor, pickUseNamespace)
 
 	// Choices are: "*", "default", "work" — move to "work".
 	m = send(m, keyDownMsg)
@@ -111,8 +112,9 @@ func TestModelDropNamespace(t *testing.T) {
 	m.ns = "work"
 
 	m = typeStr(m, "dn")
-	m = send(m, keyEnterMsg) // select [drop namespace] -> choose mode
-	g.Eq(m.mode, modeChoose)
+	m = send(m, keyEnterMsg) // select [drop namespace] -> namespace picker
+	g.Eq(m.mode, modePick)
+	g.Eq(m.pickFor, pickDropNamespace)
 
 	// Choices exclude default; "work" is the only one.
 	m = send(m, keyEnterMsg)

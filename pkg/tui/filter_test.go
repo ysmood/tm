@@ -4,12 +4,13 @@ import (
 	"testing"
 
 	"github.com/ysmood/got"
+	"github.com/ysmood/tm/pkg/store"
 )
 
-func paletteItems() []listItem {
-	items := make([]listItem, len(palette))
+func paletteItems() []pickerItem {
+	items := make([]pickerItem, len(palette))
 	for i, c := range palette {
-		items[i] = listItem{label: c.label, isCmd: true, cmdID: c.id, aliases: c.aliases}
+		items[i] = pickerItem{label: c.label, aliases: c.aliases, payload: menuPayload{isCmd: true, cmdID: c.id}}
 	}
 
 	return items
@@ -23,9 +24,9 @@ func TestPaletteAliasesRankCorrectly(t *testing.T) {
 	check := func(query string, want cmdID) {
 		g.Helper()
 
-		order := filterItems(items, query)
+		order := rankItems(items, query)
 		g.Desc("query %q produced no matches", query).Gt(len(order), 0)
-		g.Desc("query %q ranked the wrong command first", query).Eq(items[order[0]].cmdID, want)
+		g.Desc("query %q ranked the wrong command first", query).Eq(items[order[0]].payload.(menuPayload).cmdID, want)
 	}
 
 	check("ns", cmdNewSession)
@@ -40,7 +41,7 @@ func TestPaletteAliasesRankCorrectly(t *testing.T) {
 
 func TestFilterEmptyQueryKeepsOrder(t *testing.T) {
 	g := got.T(t)
-	order := filterItems(paletteItems(), "")
+	order := rankItems(paletteItems(), "")
 	g.Eq(order, []int{0, 1, 2, 3, 4})
 }
 
@@ -49,11 +50,11 @@ func TestFilterMatchesSessions(t *testing.T) {
 	g := got.T(t)
 
 	items := append(paletteItems(),
-		listItem{label: "webserver", name: "webserver"},
-		listItem{label: "api", name: "api"},
+		pickerItem{label: "webserver", text: "webserver", payload: menuPayload{sess: store.Session{Name: "webserver"}}},
+		pickerItem{label: "api", text: "api", payload: menuPayload{sess: store.Session{Name: "api"}}},
 	)
 
-	order := filterItems(items, "web")
+	order := rankItems(items, "web")
 	g.Gt(len(order), 0)
 	g.Eq(items[order[0]].label, "webserver")
 }

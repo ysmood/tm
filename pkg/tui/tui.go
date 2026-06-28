@@ -1,6 +1,12 @@
 // Package tui implements the interactive Bubble Tea menu: a fuzzy-filterable
 // list of commands and sessions. Selecting a session (or creating one) hands
 // the terminal to the relay via tea.ExecProcess; on return the menu refreshes.
+//
+// Every menu — the main list, the scrollback chooser, the namespace chooser —
+// is the same type-to-filter picker (see picker.go), so they share keys and
+// behavior. All text entry — the picker's filter and the free-text prompts
+// (naming a session or namespace, a custom line count) — is a single-line
+// textarea built by newInput.
 package tui
 
 import (
@@ -9,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ysmood/tm/pkg/proto"
@@ -54,21 +60,36 @@ var palette = []paletteCmd{
 	{cmdDropNamespace, "[drop namespace]", []string{"dn", "drop namespace", "drop"}},
 }
 
-type listItem struct {
-	label   string
-	isCmd   bool
-	cmdID   cmdID
-	aliases []string // command mnemonics, for matching
-	name    string   // session name, for matching
-	sess    store.Session
+// menuPayload is the data attached to a main-menu row: either a command or a
+// session.
+type menuPayload struct {
+	isCmd bool
+	cmdID cmdID
+	sess  store.Session
+}
+
+// scrollbackPayload is the data attached to a scrollback-chooser row.
+type scrollbackPayload struct {
+	hist   proto.HistMode
+	lines  uint32
+	custom bool // prompt for a line count instead of attaching directly
 }
 
 type mode int
 
 const (
-	modeList mode = iota
-	modeInput
-	modeChoose
+	modePick mode = iota // a type-to-filter menu (main, scrollback, namespace)
+	modeInput            // a free-text prompt
+)
+
+// pickPurpose says what the active picker selects, so Enter dispatches correctly.
+type pickPurpose int
+
+const (
+	pickMenu pickPurpose = iota
+	pickScrollback
+	pickUseNamespace
+	pickDropNamespace
 )
 
 type inputPurpose int
@@ -79,64 +100,68 @@ const (
 	inputCustomLines
 )
 
-type choosePurpose int
-
-const (
-	chooseScrollback choosePurpose = iota
-	chooseUseNamespace
-	chooseDropNamespace
-)
-
-type choice struct {
-	label string
-	value string
-}
-
 // Model is the Bubble Tea menu model.
 type Model struct {
 	st   *store.Store
 	ctrl Controller
 	ns   string
 
-	items  []listItem
-	order  []int // filtered indices into items
-	cursor int
-	query  string
+	mode mode
 
-	mode         mode
-	input        textinput.Model
+	pick    picker
+	pickFor pickPurpose
+
+	input        textarea.Model
 	inputPurpose inputPurpose
 
-	choices       []choice
-	chooseCursor  int
-	choosePurpose choosePurpose
-	pendingID     string // session awaiting a scrollback choice
+	pendingID string // session awaiting a scrollback choice
 
-	status string
-	quit   bool
+	status        string
+	quit          bool
+	width, height int
 }
 
 // New builds the menu model over a store and controller.
 func New(st *store.Store, ctrl Controller) Model {
-	ti := textinput.New()
-	ti.Prompt = "> "
-	m := Model{st: st, ctrl: ctrl, ns: store.DefaultNamespace, input: ti}
-	m.reload()
+	m := Model{st: st, ctrl: ctrl, ns: store.DefaultNamespace, input: newInput("> "), pick: newPicker()}
+	m.showMenu()
 
 	return m
+}
+
+// newInput builds the single-line textarea used for every text field: the
+// picker's filter and the free-text prompts. textarea is multi-line by nature,
+// so it is pinned to one row with newlines disabled and the cursor-line
+// highlight, line numbers and blink stripped for a plain "prompt text" look.
+func newInput(prompt string) textarea.Model {
+	ta := textarea.New()
+	ta.Prompt = prompt
+	ta.ShowLineNumbers = false
+	ta.MaxHeight = 1
+	ta.SetHeight(1)
+	ta.KeyMap.InsertNewline.SetEnabled(false)
+
+	s := ta.Styles()
+	s.Cursor.Blink = false
+	s.Focused.CursorLine = lipgloss.NewStyle()
+	s.Blurred.CursorLine = lipgloss.NewStyle()
+	ta.SetStyles(s)
+
+	return ta
 }
 
 // Init satisfies tea.Model.
 func (m Model) Init() tea.Cmd { return nil }
 
-func (m *Model) reload() {
-	items := make([]listItem, 0, len(palette)+8)
+// menuItems builds the main menu: the fixed commands followed by the sessions
+// in the active namespace.
+func (m *Model) menuItems() []pickerItem {
+	items := make([]pickerItem, 0, len(palette)+8)
 	for _, c := range palette {
-		items = append(items, listItem{
+		items = append(items, pickerItem{
 			label:   c.label,
-			isCmd:   true,
-			cmdID:   c.id,
 			aliases: c.aliases,
+			payload: menuPayload{isCmd: true, cmdID: c.id},
 		})
 	}
 
@@ -147,18 +172,51 @@ func (m *Model) reload() {
 			label = s.Name + "  (" + s.Namespace + ")"
 		}
 
-		items = append(items, listItem{label: label, name: s.Name, sess: s})
+		items = append(items, pickerItem{label: label, text: s.Name, payload: menuPayload{sess: s}})
 	}
 
-	m.items = items
-	m.applyFilter()
+	return items
 }
 
-func (m *Model) applyFilter() {
-	m.order = filterItems(m.items, m.query)
-	if m.cursor >= len(m.order) {
-		m.cursor = 0
+// showMenu returns to the main command/session list.
+func (m *Model) showMenu() {
+	m.mode = modePick
+	m.pickFor = pickMenu
+	m.pick.setItems(m.menuItems())
+}
+
+func (m *Model) showScrollback() {
+	m.mode = modePick
+	m.pickFor = pickScrollback
+	m.pick.setItems([]pickerItem{
+		{label: "All history", payload: scrollbackPayload{hist: proto.HistAll}},
+		{label: "One page", payload: scrollbackPayload{hist: proto.HistPage}},
+		{label: "Last 100 lines", payload: scrollbackPayload{hist: proto.HistLines, lines: 100}},
+		{label: "Last 1000 lines", payload: scrollbackPayload{hist: proto.HistLines, lines: 1000}},
+		{label: "Custom number of lines…", payload: scrollbackPayload{custom: true}},
+	})
+}
+
+func (m *Model) showNamespaces(p pickPurpose) {
+	m.mode = modePick
+	m.pickFor = p
+
+	names, _ := m.st.ListNamespaces()
+
+	var items []pickerItem
+	if p == pickUseNamespace {
+		items = append(items, pickerItem{label: "* (all sessions)", text: "* all sessions", payload: store.AllNamespaces})
 	}
+
+	for _, n := range names {
+		if p == pickDropNamespace && n == store.DefaultNamespace {
+			continue
+		}
+
+		items = append(items, pickerItem{label: n, payload: n})
+	}
+
+	m.pick.setItems(items)
 }
 
 // relayDoneMsg is delivered when the relay subprocess returns.
@@ -173,35 +231,43 @@ type spawnedMsg struct {
 // Update satisfies tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.pick.setSize(msg.Width, m.listHeight())
+		m.input.SetWidth(msg.Width)
+
+		return m, nil
 	case relayDoneMsg:
-		m.mode = modeList
 		if msg.err != nil {
 			m.status = "session ended: " + msg.err.Error()
 		} else {
 			m.status = ""
 		}
 
-		m.reload()
+		m.showMenu()
 
 		return m, nil
 	case spawnedMsg:
 		if msg.err != nil {
-			m.mode = modeList
 			m.status = "failed to start session: " + msg.err.Error()
-			m.reload()
+			m.showMenu()
 
 			return m, nil
 		}
 
 		return m, m.attach(msg.id, proto.HistNone, 0)
 	case tea.KeyPressMsg:
+		if msg.String() == "ctrl+c" {
+			m.quit = true
+
+			return m, tea.Quit
+		}
+
 		switch m.mode {
-		case modeList:
-			return m.updateList(msg)
+		case modePick:
+			return m.updatePick(msg)
 		case modeInput:
 			return m.updateInput(msg)
-		case modeChoose:
-			return m.updateChoose(msg)
 		}
 	}
 
@@ -220,57 +286,71 @@ const (
 	keyEnter = "enter"
 )
 
-func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c", keyEsc:
-		m.quit = true
+func (m Model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	action, cmd := m.pick.update(msg)
+	switch action {
+	case pickCanceled:
+		// On the main menu esc leaves tm (sessions keep running); in a
+		// sub-menu it backs out to the main menu.
+		if m.pickFor == pickMenu {
+			m.quit = true
 
-		return m, tea.Quit
-	case "up", "ctrl+k":
-		if m.cursor > 0 {
-			m.cursor--
+			return m, tea.Quit
 		}
 
-		return m, nil
-	case "down", "ctrl+j":
-		if m.cursor < len(m.order)-1 {
-			m.cursor++
-		}
+		m.showMenu()
 
 		return m, nil
-	case keyEnter:
-		return m.selectCurrent()
-	case "backspace":
-		if len(m.query) > 0 {
-			m.query = m.query[:len(m.query)-1]
-			m.applyFilter()
+	case pickSelected:
+		it, ok := m.pick.selected()
+		if !ok {
+			return m, nil
 		}
 
-		return m, nil
-	default:
-		if msg.Text != "" {
-			m.query += msg.Text
-			m.applyFilter()
-		}
-
-		return m, nil
+		return m.selectPicked(it)
+	case pickNothing:
 	}
+
+	return m, cmd
 }
 
-func (m Model) selectCurrent() (tea.Model, tea.Cmd) {
-	if len(m.order) == 0 {
+func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
+	// Each picker holds one payload type, set right where its items are built,
+	// so these assertions hold by construction; the ok-checks just keep the
+	// dispatch total.
+	switch m.pickFor {
+	case pickMenu:
+		if p, ok := it.payload.(menuPayload); ok {
+			return m.selectMenu(p)
+		}
+	case pickScrollback:
+		if p, ok := it.payload.(scrollbackPayload); ok {
+			return m.selectScrollback(p)
+		}
+	case pickUseNamespace:
+		if ns, ok := it.payload.(string); ok {
+			m.ns = ns
+			m.status = "namespace: " + ns
+			m.showMenu()
+		}
+	case pickDropNamespace:
+		if ns, ok := it.payload.(string); ok {
+			return m.dropNamespace(ns)
+		}
+	}
+
+	return m, nil
+}
+
+func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
+	if !p.isCmd {
+		m.pendingID = p.sess.ID
+		m.showScrollback()
+
 		return m, nil
 	}
 
-	it := m.items[m.order[m.cursor]]
-	if !it.isCmd {
-		m.pendingID = it.sess.ID
-		m.enterScrollbackChoose()
-
-		return m, nil
-	}
-
-	switch it.cmdID {
+	switch p.cmdID {
 	case cmdNewSession:
 		m.enterInput(inputNewSession, "New session name:", m.ctrl.DefaultSessionName(m.targetNamespace()))
 	case cmdDetachSession:
@@ -283,10 +363,39 @@ func (m Model) selectCurrent() (tea.Model, tea.Cmd) {
 	case cmdNewNamespace:
 		m.enterInput(inputNewNamespace, "New namespace name:", "")
 	case cmdUseNamespace:
-		m.enterNamespaceChoose(chooseUseNamespace)
+		m.showNamespaces(pickUseNamespace)
 	case cmdDropNamespace:
-		m.enterNamespaceChoose(chooseDropNamespace)
+		m.showNamespaces(pickDropNamespace)
 	}
+
+	return m, nil
+}
+
+func (m Model) selectScrollback(p scrollbackPayload) (tea.Model, tea.Cmd) {
+	if p.custom {
+		m.enterInput(inputCustomLines, "Number of lines:", "")
+
+		return m, nil
+	}
+
+	id := m.pendingID
+	m.showMenu()
+
+	return m, m.attach(id, p.hist, p.lines)
+}
+
+func (m Model) dropNamespace(ns string) (tea.Model, tea.Cmd) {
+	if err := m.st.DeleteNamespace(ns); err != nil {
+		m.status = err.Error()
+	} else {
+		if m.ns == ns {
+			m.ns = store.DefaultNamespace
+		}
+
+		m.status = "dropped namespace: " + ns
+	}
+
+	m.showMenu()
 
 	return m, nil
 }
@@ -310,45 +419,10 @@ func (m *Model) enterInput(p inputPurpose, prompt, value string) {
 	_ = m.input.Focus()
 }
 
-func (m *Model) enterScrollbackChoose() {
-	m.mode = modeChoose
-	m.choosePurpose = chooseScrollback
-	m.chooseCursor = 0
-	m.choices = []choice{
-		{"All history", "all"},
-		{"One page", "page"},
-		{"Last 100 lines", "100"},
-		{"Last 1000 lines", "1000"},
-		{"Custom number of lines…", "custom"},
-	}
-}
-
-func (m *Model) enterNamespaceChoose(p choosePurpose) {
-	m.mode = modeChoose
-	m.choosePurpose = p
-	m.chooseCursor = 0
-	names, _ := m.st.ListNamespaces()
-
-	var ch []choice
-	if p == chooseUseNamespace {
-		ch = append(ch, choice{"* (all sessions)", store.AllNamespaces})
-	}
-
-	for _, n := range names {
-		if p == chooseDropNamespace && n == store.DefaultNamespace {
-			continue
-		}
-
-		ch = append(ch, choice{n, n})
-	}
-
-	m.choices = ch
-}
-
 func (m Model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case keyEsc:
-		m.mode = modeList
+		m.showMenu()
 
 		return m, nil
 	case keyEnter:
@@ -372,7 +446,7 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 		}
 
 		ns := m.targetNamespace()
-		m.mode = modeList
+		m.showMenu()
 		m.status = "starting session…"
 
 		return m, func() tea.Msg {
@@ -387,17 +461,14 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		err := m.st.CreateNamespace(val)
-		if err != nil {
+		if err := m.st.CreateNamespace(val); err != nil {
 			m.status = err.Error()
 		} else {
 			m.ns = val
 			m.status = "namespace: " + val
 		}
 
-		m.mode = modeList
-		m.query = ""
-		m.reload()
+		m.showMenu()
 
 		return m, nil
 	case inputCustomLines:
@@ -409,94 +480,9 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 		}
 
 		id := m.pendingID
-		m.mode = modeList
+		m.showMenu()
 
 		return m, m.attach(id, proto.HistLines, uint32(n))
-	}
-
-	return m, nil
-}
-
-func (m Model) updateChoose(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case keyEsc:
-		m.mode = modeList
-
-		return m, nil
-	case "up", "ctrl+k":
-		if m.chooseCursor > 0 {
-			m.chooseCursor--
-		}
-
-		return m, nil
-	case "down", "ctrl+j":
-		if m.chooseCursor < len(m.choices)-1 {
-			m.chooseCursor++
-		}
-
-		return m, nil
-	case keyEnter:
-		if len(m.choices) == 0 {
-			m.mode = modeList
-
-			return m, nil
-		}
-
-		return m.submitChoose(m.choices[m.chooseCursor])
-	}
-
-	return m, nil
-}
-
-func (m Model) submitChoose(ch choice) (tea.Model, tea.Cmd) {
-	switch m.choosePurpose {
-	case chooseScrollback:
-		id := m.pendingID
-
-		switch ch.value {
-		case "all":
-			m.mode = modeList
-
-			return m, m.attach(id, proto.HistAll, 0)
-		case "page":
-			m.mode = modeList
-
-			return m, m.attach(id, proto.HistPage, 0)
-		case "custom":
-			m.enterInput(inputCustomLines, "Number of lines:", "")
-
-			return m, nil
-		default:
-			n, _ := strconv.Atoi(ch.value)
-			m.mode = modeList
-
-			return m, m.attach(id, proto.HistLines, uint32(n))
-		}
-	case chooseUseNamespace:
-		m.ns = ch.value
-		m.status = "namespace: " + ch.value
-		m.mode = modeList
-		m.query = ""
-		m.reload()
-
-		return m, nil
-	case chooseDropNamespace:
-		err := m.st.DeleteNamespace(ch.value)
-		if err != nil {
-			m.status = err.Error()
-		} else {
-			if m.ns == ch.value {
-				m.ns = store.DefaultNamespace
-			}
-
-			m.status = "dropped namespace: " + ch.value
-		}
-
-		m.mode = modeList
-		m.query = ""
-		m.reload()
-
-		return m, nil
 	}
 
 	return m, nil
@@ -509,49 +495,35 @@ func (m Model) View() tea.View {
 		return tea.View{}
 	}
 
-	var content string
-
-	switch m.mode {
-	case modeInput:
+	content := m.viewPick()
+	if m.mode == modeInput {
 		content = m.viewInput()
-	case modeChoose:
-		content = m.viewChoose()
-	default:
-		content = m.viewList()
 	}
 
 	return tea.View{Content: content, AltScreen: true}
 }
 
+// maxRows is the picker height used until the first WindowSizeMsg (and the
+// minimum thereafter).
 const maxRows = 15
 
-func (m Model) viewList() string {
+// listHeight is the height handed to the picker's list, leaving room for the
+// title, query line and footer.
+func (m Model) listHeight() int {
+	if h := m.height - 7; h >= 3 {
+		return h
+	}
+
+	return maxRows
+}
+
+func (m Model) viewPick() string {
 	th := styles()
 
 	var b strings.Builder
 
 	b.WriteString(th.title.Render("tm") + "  " + th.dim.Render("namespace: "+m.ns) + "\n\n")
-	b.WriteString("> " + m.query + "\n\n")
-
-	if len(m.order) == 0 {
-		b.WriteString(th.dim.Render("  (no matches)") + "\n")
-	}
-
-	for i, idx := range m.order {
-		if i >= maxRows {
-			b.WriteString(th.dim.Render("  …more") + "\n")
-
-			break
-		}
-
-		it := m.items[idx]
-		if i == m.cursor {
-			b.WriteString("> " + th.sel.Render(it.label) + "\n")
-		} else {
-			b.WriteString("  " + it.label + "\n")
-		}
-	}
-
+	b.WriteString(m.pick.view())
 	b.WriteString("\n" + m.footer())
 
 	return b.String()
@@ -560,8 +532,13 @@ func (m Model) viewList() string {
 func (m Model) footer() string {
 	th := styles()
 
-	help := th.dim.Render(`↑/↓ move · enter select · esc quit (sessions keep running) · Ctrl-\ back to menu from a shell`)
+	keys := `↑/↓ move · type to filter · enter select · esc back`
+	if m.pickFor == pickMenu {
+		keys = "↑/↓ move · type to filter · enter select · " +
+			`esc quit (sessions keep running) · Ctrl-\ back to menu from a shell`
+	}
 
+	help := th.dim.Render(keys)
 	if m.status != "" {
 		return th.status.Render(m.status) + "\n" + help
 	}
@@ -574,26 +551,6 @@ func (m Model) viewInput() string {
 
 	return th.title.Render("tm") + "\n\n" + m.input.View() + "\n\n" +
 		th.dim.Render("enter confirm · esc cancel")
-}
-
-func (m Model) viewChoose() string {
-	th := styles()
-
-	var b strings.Builder
-
-	b.WriteString(th.title.Render("tm") + "\n\n")
-
-	for i, ch := range m.choices {
-		if i == m.chooseCursor {
-			b.WriteString("> " + th.sel.Render(ch.label) + "\n")
-		} else {
-			b.WriteString("  " + ch.label + "\n")
-		}
-	}
-
-	b.WriteString("\n" + th.dim.Render("↑/↓ move · enter select · esc cancel"))
-
-	return b.String()
 }
 
 type theme struct {

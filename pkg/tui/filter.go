@@ -17,10 +17,13 @@ const (
 	scoreSessionBase = 300
 )
 
-// filterItems returns the indices of items matching query, best match first.
-// An empty query keeps the original order. Commands are matched against their
-// alias tokens; sessions are fuzzy-matched on their name.
-func filterItems(items []listItem, query string) []int {
+// rankItems returns the indices of items matching query, best match first. An
+// empty query keeps the original order. Items carrying alias tokens (the fixed
+// commands) are matched against those mnemonics and ranked in a band above
+// plain fuzzy matches, so typing "ns" always selects [new session] rather than
+// a session whose name merely contains those letters. Other items are
+// fuzzy-matched on their text.
+func rankItems(items []pickerItem, query string) []int {
 	if query == "" {
 		idx := make([]int, len(items))
 		for i := range idx {
@@ -42,10 +45,10 @@ func filterItems(items []listItem, query string) []int {
 			ok    bool
 		)
 
-		if it.isCmd {
+		if len(it.aliases) > 0 {
 			score, ok = scoreCommand(it.aliases, q)
 		} else {
-			score, ok = scoreSession(strings.ToLower(it.name), q)
+			score, ok = scoreSession(strings.ToLower(it.matchText()), q)
 		}
 
 		if ok {
