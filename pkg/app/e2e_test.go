@@ -166,9 +166,10 @@ func TestRelayUnderPTY(t *testing.T) {
 }
 
 // TestMenuCreateAttachDetach drives the real menu through the whole flow: create
-// a session, attach, run a command in its shell, then detach back to the menu
-// and quit. The assertion matches executed output ("ok-42" from "$((6*7))"),
-// not the echoed input, so it proves the shell actually ran.
+// a session, attach, run a command in its shell, then detach — which leaves tm
+// for the launching shell while the session keeps running. The assertion matches
+// executed output ("ok-42" from "$((6*7))"), not the echoed input, so it proves
+// the shell actually ran.
 func TestMenuCreateAttachDetach(t *testing.T) {
 	g := got.T(t)
 	g.PanicAfter(120 * time.Second)
@@ -212,11 +213,8 @@ func TestMenuCreateAttachDetach(t *testing.T) {
 	send("echo ok-$((6*7))\r")
 	g.Desc("outer buffer: %q", buf.String()).True(waitForText(buf, "ok-42", 15*time.Second))
 
-	_, err = pt.Write([]byte{0x1c}) // Ctrl-\ detaches back to the menu
+	_, err = pt.Write([]byte{0x1c}) // Ctrl-\ detaches; tm exits to the launching shell
 	g.E(err)
-	time.Sleep(1500 * time.Millisecond)
 
-	_, err = pt.Write([]byte{0x03}) // Ctrl-C quits the menu
-	g.E(err)
-	g.E(c.Wait())
+	g.E(c.Wait()) // detaching leaves tm (the session keeps running in the background)
 }

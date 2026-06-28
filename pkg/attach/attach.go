@@ -14,8 +14,9 @@ import (
 	"golang.org/x/term"
 )
 
-// DefaultDetachKey is Ctrl-\ (0x1c): pressing it returns control to the menu
-// while the session keeps running in the background.
+// DefaultDetachKey is Ctrl-\ (0x1c): pressing it detaches from the session,
+// which keeps running in the background, and returns to tm (which then exits to
+// the launching shell).
 const DefaultDetachKey = 0x1c
 
 // Options configures an attach session.

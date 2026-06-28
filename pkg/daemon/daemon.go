@@ -208,19 +208,37 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 
 	d.client = c
 
-	hist := d.sb.History(att.Hist, int(att.Lines), rows)
+	// Strip query sequences so replaying history can't make the attaching
+	// terminal answer probes and inject the replies into the session.
+	hist := sanitizeReplay(d.sb.History(att.Hist, int(att.Lines), rows))
 	if len(hist) == 0 {
 		return true
 	}
 
-	out := make([]byte, 0, len(softReset)+len(hist))
-	out = append(out, softReset...)
-	out = append(out, hist...)
-
-	if err := c.Write(proto.MsgOutput, out); err != nil {
+	if !replay(c, hist) {
 		d.client = nil
 
 		return false
+	}
+
+	return true
+}
+
+// replay sends the soft reset followed by the recorded history to c, split into
+// frames no larger than proto.MaxPayload. "All history" can be many megabytes,
+// while a single frame is capped, so the history must be chunked — otherwise the
+// oversized frame is rejected, the connection drops, and the attach silently
+// bounces back to the menu. It returns false if any write fails.
+func replay(c *proto.Conn, hist []byte) bool {
+	if err := c.Write(proto.MsgOutput, softReset); err != nil {
+		return false
+	}
+
+	for off := 0; off < len(hist); off += proto.MaxPayload {
+		end := min(off+proto.MaxPayload, len(hist))
+		if err := c.Write(proto.MsgOutput, hist[off:end]); err != nil {
+			return false
+		}
 	}
 
 	return true

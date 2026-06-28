@@ -1,6 +1,8 @@
 // Package tui implements the interactive Bubble Tea menu: a fuzzy-filterable
 // list of commands and sessions. Selecting a session (or creating one) hands
-// the terminal to the relay via tea.ExecProcess; on return the menu refreshes.
+// the terminal to the relay via tea.ExecProcess. A clean return — the user
+// detached or the session's shell exited — quits tm back to the launching
+// shell; only a failed attach drops back into the menu (reaping dead sessions).
 //
 // Every menu — the main list, the scrollback chooser, the namespace chooser —
 // is the same type-to-filter picker (see picker.go), so they share keys and
@@ -258,13 +260,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.status = "session ended: " + msg.err.Error()
 			}
-		} else {
-			m.status = ""
+
+			m.showMenu()
+
+			return m, nil
 		}
 
-		m.showMenu()
+		// A clean return from a session — the user detached (Ctrl-\) or the
+		// session's shell exited — means we're done driving a session: leave tm
+		// and drop back to the launching shell, with every session still running.
+		// Run tm again to pick up another one.
+		m.quit = true
 
-		return m, nil
+		return m, tea.Quit
 	case spawnedMsg:
 		if msg.err != nil {
 			m.status = "failed to start session: " + msg.err.Error()
@@ -563,7 +571,7 @@ func (m Model) footer() string {
 	keys := `↑/↓ move · type to filter · enter select · esc back`
 	if m.pickFor == pickMenu {
 		keys = "↑/↓ move · type to filter · enter select · " +
-			`esc quit (sessions keep running) · Ctrl-\ back to menu from a shell`
+			`esc quit (sessions keep running) · Ctrl-\ in a session detaches to your shell`
 	}
 
 	help := th.dim.Render(keys)

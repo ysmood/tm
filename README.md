@@ -39,7 +39,13 @@ If you are already in a session, it will switch to the new session instead of ne
 
 ### Detach from a session
 
-The command is `[detach session]`. You just type words like `detach`, `ds`, `[d`, `[ds`, etc. and hit enter.
+While you are inside a session, press `Ctrl-\` to detach: tm leaves and drops you
+back to the shell you launched it from, while the session keeps running in the
+background. Run `tm` again to pick it back up.
+
+From the menu, the `[detach session]` command does the same thing — leave tm with
+every session still running. You just type words like `detach`, `ds`, `[d`, `[ds`,
+etc. and hit enter.
 
 ### New namespace
 

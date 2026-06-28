@@ -108,6 +108,35 @@ func TestAttachInputOutputAndExit(t *testing.T) {
 	g.Is(gerr, store.ErrNotFound)
 }
 
+// TestAttachAllHistoryExceedsMaxPayload guards the chunked replay: a session
+// whose scrollback is larger than a single frame (proto.MaxPayload) must still
+// replay in full on a HistAll attach. Sending it as one frame would be rejected
+// as "payload too large", drop the connection, and bounce the attach back to the
+// menu — making a busy session impossible to enter.
+func TestAttachAllHistoryExceedsMaxPayload(t *testing.T) {
+	g, st, p := setupDaemon(t)
+	sess := makeSession(g, st, "bighist")
+
+	// Seed the log with a marker placed beyond the single-frame limit, so it can
+	// only arrive if the replay spans multiple frames.
+	const tailMarker = "TAIL-BEYOND-MAXPAYLOAD"
+
+	seed := append(make([]byte, 0, 2*proto.MaxPayload+len(tailMarker)),
+		[]byte(strings.Repeat("x", 2*proto.MaxPayload))...)
+	seed = append(seed, []byte(tailMarker+"\n")...)
+	g.E(os.WriteFile(p.LogFile(sess.ID), seed, 0o600))
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	nc, c := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistAll, Cols: 80, Rows: 24})
+	defer nc.Close()
+
+	g.True(readUntil(nc, c, tailMarker, 10*time.Second))
+}
+
 func TestDetachThenReattach(t *testing.T) {
 	g, st, p := setupDaemon(t)
 	sess := makeSession(g, st, "persist1")

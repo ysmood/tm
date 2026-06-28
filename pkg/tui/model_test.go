@@ -104,6 +104,21 @@ func TestModelReapsDeadSessionOnAttachError(t *testing.T) {
 	g.Has(m.status, "unreachable")
 }
 
+// A clean return from a session — the user detached (Ctrl-\) or the session's
+// shell exited — quits tm back to the launching shell rather than re-showing
+// the menu.
+func TestModelCleanRelayReturnQuits(t *testing.T) {
+	g := got.T(t)
+	m := New(newStore(g, t), fakeCtrl{})
+
+	next, cmd := m.Update(relayDoneMsg{})
+
+	g.True(next.(Model).quit)
+	g.NotNil(cmd)
+	_, ok := cmd().(tea.QuitMsg)
+	g.True(ok)
+}
+
 // Selecting [detach session] quits tm (sessions keep running in the background).
 func TestModelDetachSessionQuits(t *testing.T) {
 	g := got.T(t)

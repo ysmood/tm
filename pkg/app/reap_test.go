@@ -11,17 +11,22 @@ import (
 
 	gopty "github.com/aymanbagabas/go-pty"
 	"github.com/ysmood/got"
+	"github.com/ysmood/tm/pkg/app"
 	"github.com/ysmood/tm/pkg/config"
 	"github.com/ysmood/tm/pkg/store"
 )
 
-// TestMenuReapsUnreachableSession reproduces the "can't re-enter a session after
-// detach, it bounces forever" bug and proves the fix. A session whose daemon
-// died without a clean shutdown (SIGKILL here; equivalently a reboot that clears
-// the socket dir) leaves a record with a stale PID. Attaching to it makes the
-// relay fail to dial and exit, bouncing back to the menu. Before the fix the
-// dead session stayed listed, so reselecting it bounced forever; now the failed
-// attach reaps it and it drops out of the menu.
+// TestMenuReapsUnreachableSession reproduces the "can't re-enter a session, it
+// bounces forever" bug and proves the fix. A session whose daemon died without a
+// clean shutdown (SIGKILL here; equivalently a reboot that clears the socket dir)
+// leaves a record with a stale PID. Attaching to it makes the relay fail to dial
+// and exit, bouncing back to the menu. Before the fix the dead session stayed
+// listed, so reselecting it bounced forever; now the failed attach reaps it and
+// it drops out of the menu.
+//
+// To hold the menu on a doomed-but-still-listed session, the session is spawned
+// outside the menu so it survives the startup prune, then killed while the menu
+// is up (detaching now leaves tm entirely, so it can't keep the menu alive).
 func TestMenuReapsUnreachableSession(t *testing.T) {
 	g := got.T(t)
 	g.PanicAfter(120 * time.Second)
@@ -34,6 +39,19 @@ func TestMenuReapsUnreachableSession(t *testing.T) {
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
+
+	// Spawn a live session daemon before the menu starts, so the menu's startup
+	// prune keeps it and lists it.
+	p, err := config.New()
+	g.E(err)
+	g.E(p.EnsureDirs())
+	st := store.New(p)
+	sess := store.Session{
+		ID: "dead", Name: "victim", Namespace: store.DefaultNamespace,
+		Shell: "/bin/sh", CreatedAt: time.Unix(1, 0),
+	}
+	g.E(st.SaveSession(sess))
+	g.E(app.SpawnWith(bin, p, sess))
 
 	pt, err := gopty.New()
 	g.E(err)
@@ -54,26 +72,14 @@ func TestMenuReapsUnreachableSession(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 
-	g.True(waitForText(buf, "new session", 10*time.Second))
-	send("ns\r")
-	g.True(waitForText(buf, "New session name", 10*time.Second))
-	send("\r") // accept default name -> spawn + attach
-	time.Sleep(1500 * time.Millisecond)
-	send("echo first-$((6*7))\r")
-	g.Desc("shell never ran: %q", buf.String()).True(waitForText(buf, "first-42", 15*time.Second))
+	// The live session is listed in the menu.
+	g.Desc("menu: %q", buf.String()).True(waitForText(buf, "victim", 10*time.Second))
 
-	_, err = pt.Write([]byte{0x1c}) // detach back to the menu
+	// Kill the daemon hard while the menu is up: the record and socket file linger
+	// but nothing serves, so attaching will fail to dial.
+	live, err := st.GetSession("dead")
 	g.E(err)
-	time.Sleep(1000 * time.Millisecond)
-	g.True(waitForText(buf, "detach session", 5*time.Second))
-
-	// Kill the daemon hard: the record and socket file linger but nothing serves.
-	p, err := config.New()
-	g.E(err)
-	st := store.New(p)
-	sessions, _ := st.ListSessions()
-	g.Len(sessions, 1)
-	g.E(syscall.Kill(sessions[0].PID, syscall.SIGKILL))
+	g.E(syscall.Kill(live.PID, syscall.SIGKILL))
 	time.Sleep(500 * time.Millisecond)
 
 	// Select the now-dead session and try to attach -> relay fails to dial.
