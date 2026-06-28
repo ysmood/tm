@@ -104,7 +104,8 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- runIO(addr, Options{Hist: proto.HistNone}, inR, out, 0, false)
+		done <- runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+			func(string) string { return addr }, "x")
 	}()
 
 	// Input is forwarded and echoed back as output.

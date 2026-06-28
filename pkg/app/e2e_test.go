@@ -17,6 +17,7 @@ import (
 	"github.com/ysmood/got"
 	"github.com/ysmood/tm/pkg/app"
 	"github.com/ysmood/tm/pkg/config"
+	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
 )
 
@@ -81,6 +82,73 @@ func TestMenuRendersUnderPTY(t *testing.T) {
 	_, _ = pt.Write([]byte{0x03}) // Ctrl-C quits the menu
 
 	g.E(c.Wait())
+}
+
+// TestRelaySwitchesSessions proves the real relay switches sessions in place
+// instead of nesting: a relay attached to session aaa is told (via aaa's daemon,
+// exactly as an in-session tm would) to hand over to bbb, and afterwards the same
+// terminal is driving bbb. Each session reports its identity via $TM_SESSION, so
+// the WHO= markers come from the session's own shell, not the echoed input.
+func TestRelaySwitchesSessions(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(120 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmsw")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+	g.Setenv("TM_HOME", t.TempDir())
+	g.Setenv("XDG_RUNTIME_DIR", rt)
+	killLeftoverDaemons(g)
+
+	bin := buildTM(g, t)
+
+	p, err := config.New()
+	g.E(err)
+	g.E(p.EnsureDirs())
+	st := store.New(p)
+
+	for _, id := range []string{"aaa", "bbb"} {
+		sess := store.Session{
+			ID: id, Name: id, Namespace: store.DefaultNamespace,
+			Shell: "/bin/sh", CreatedAt: time.Unix(1, 0),
+		}
+		g.E(st.SaveSession(sess))
+		g.E(app.SpawnWith(bin, p, sess))
+	}
+
+	pt, err := gopty.New()
+	g.E(err)
+	g.E(pt.Resize(120, 40))
+
+	defer func() { _ = pt.Close() }()
+
+	c := pt.Command(bin, "__attach", "--id", "aaa")
+	c.Env = os.Environ()
+	g.E(c.Start())
+
+	buf := &safeBuilder{}
+	go func() { _, _ = io.Copy(buf, pt) }()
+
+	time.Sleep(800 * time.Millisecond)
+	_, err = pt.Write([]byte("echo WHO=$TM_SESSION\r"))
+	g.E(err)
+	g.Desc("relay should start on aaa: %q", buf.String()).True(waitForText(buf, "WHO=aaa", 10*time.Second))
+
+	// Ask aaa's daemon to hand the relay to bbb — what controller.Switch does.
+	nc, derr := proto.Dial(proto.SockAddr(p, "aaa"))
+	g.E(derr)
+	conn := proto.NewConn(nc)
+	g.E(conn.Write(proto.MsgSwitch, proto.SwitchTarget{ID: "bbb"}.Encode()))
+	_, _, _ = conn.Read() // block until the daemon forwards and closes
+	_ = nc.Close()
+
+	time.Sleep(1 * time.Second) // let the relay re-attach to bbb
+	_, err = pt.Write([]byte("echo WHO=$TM_SESSION\r"))
+	g.E(err)
+	g.Desc("relay should have switched to bbb: %q", buf.String()).True(waitForText(buf, "WHO=bbb", 10*time.Second))
+
+	_, _ = pt.Write([]byte{0x1c}) // detach -> the relay exits
+	_ = c.Wait()
 }
 
 func waitForText(buf *safeBuilder, want string, timeout time.Duration) bool {

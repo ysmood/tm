@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -18,8 +19,26 @@ type fakeCtrl struct{}
 
 func (fakeCtrl) AttachCmd(string, proto.HistMode, uint32) *exec.Cmd { return exec.Command("true") }
 func (fakeCtrl) CreateAndSpawn(string, string) (string, error)      { return "id", nil }
+func (fakeCtrl) CurrentSession() string                             { return "" }
+func (fakeCtrl) Switch(string, proto.HistMode, uint32) error        { return nil }
 func (fakeCtrl) DefaultSessionName(string) string                   { return "default-name" }
 func (fakeCtrl) Reap() int                                          { return 0 }
+
+// sessCtrl reports a current-session name, simulating a tm launched from within
+// a session's shell, and records the id of any switch it is asked to perform.
+type sessCtrl struct {
+	fakeCtrl
+	name       string
+	switchedTo *string
+}
+
+func (c sessCtrl) CurrentSession() string { return c.name }
+
+func (c sessCtrl) Switch(id string, _ proto.HistMode, _ uint32) error {
+	*c.switchedTo = id
+
+	return nil
+}
 
 func newStore(g got.G, t *testing.T) *store.Store {
 	p := config.Paths{Home: t.TempDir(), Runtime: t.TempDir()}
@@ -117,6 +136,48 @@ func TestModelCleanRelayReturnQuits(t *testing.T) {
 	g.NotNil(cmd)
 	_, ok := cmd().(tea.QuitMsg)
 	g.True(ok)
+}
+
+// Launched from within a session, the menu header shows that session's name so
+// the user can see they are nested; otherwise it shows no such hint.
+func TestModelShowsCurrentSession(t *testing.T) {
+	g := got.T(t)
+
+	in := New(newStore(g, t), sessCtrl{name: "my-work"})
+	g.Has(in.viewPick(), "in session: my-work")
+
+	out := New(newStore(g, t), fakeCtrl{})
+	g.Eq(out.curSession, "")
+	g.True(!strings.Contains(out.viewPick(), "in session"))
+}
+
+// Inside a session, picking another session hands the current relay over (a
+// switch) instead of nesting a new one, then quits this menu.
+func TestModelInSessionSwitchesInsteadOfNesting(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "target", Name: "target", Namespace: store.DefaultNamespace}))
+
+	var switched string
+	m := New(st, sessCtrl{name: "current", switchedTo: &switched})
+
+	m = send(m, keyEnterMsg) // the cursor starts on the session -> scrollback chooser
+	g.Eq(m.pickFor, pickScrollback)
+
+	_, cmd := m.Update(keyEnterMsg) // choose "All history" -> switch cmd
+	g.NotNil(cmd)
+
+	msg, ok := cmd().(switchDoneMsg) // running it performs the switch
+	g.True(ok)
+	g.E(msg.err)
+	g.Eq(switched, "target")
+
+	// Delivering the result quits tm so the handed-over relay shows the target.
+	final, qcmd := m.Update(msg)
+	g.True(final.(Model).quit)
+	g.NotNil(qcmd)
+	_, isQuit := qcmd().(tea.QuitMsg)
+	g.True(isQuit)
 }
 
 // Selecting [detach session] quits tm (sessions keep running in the background).

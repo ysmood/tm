@@ -9,6 +9,11 @@ import (
 // EnvHome overrides the default storage root when set.
 const EnvHome = "TM_HOME"
 
+// EnvSession names the session a shell belongs to. The daemon sets it (to the
+// session id) in every session shell's environment, so a tm launched from inside
+// a session can tell which session it is running in.
+const EnvSession = "TM_SESSION"
+
 // Paths holds the resolved storage locations. Home holds persistent data
 // (session metadata, logs); Runtime holds transient unix sockets and is kept
 // short on purpose, since socket paths have a ~104-byte OS limit. Runtime is

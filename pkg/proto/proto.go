@@ -29,6 +29,14 @@ const (
 	MsgOutput
 	// MsgExit reports the shell's exit code; the session is over.
 	MsgExit
+	// MsgSwitch asks the daemon to hand its attached client (the relay) to another
+	// session, so a tm running inside this session can move the terminal there
+	// instead of nesting a new relay. The sender does not attach, so the current
+	// client is not displaced. Payload is a SwitchTarget.
+	MsgSwitch
+	// MsgSwitchTo is the daemon forwarding a switch request to its attached client:
+	// re-attach to the carried SwitchTarget. Payload is a SwitchTarget.
+	MsgSwitchTo
 )
 
 // HistMode selects how much scrollback the daemon replays on attach.
@@ -102,6 +110,37 @@ func DecodeResize(p []byte) (Resize, error) {
 	return Resize{
 		Cols: binary.BigEndian.Uint16(p[0:]),
 		Rows: binary.BigEndian.Uint16(p[2:]),
+	}, nil
+}
+
+// SwitchTarget is the payload of MsgSwitch/MsgSwitchTo: the session to re-attach
+// to and how much of its history to replay.
+type SwitchTarget struct {
+	ID    string
+	Hist  HistMode
+	Lines uint32
+}
+
+// Encode serializes the SwitchTarget payload (hist, lines, then the id bytes).
+func (s SwitchTarget) Encode() []byte {
+	b := make([]byte, 5+len(s.ID))
+	b[0] = byte(s.Hist)
+	binary.BigEndian.PutUint32(b[1:], s.Lines)
+	copy(b[5:], s.ID)
+
+	return b
+}
+
+// DecodeSwitchTarget parses a SwitchTarget payload.
+func DecodeSwitchTarget(p []byte) (SwitchTarget, error) {
+	if len(p) < 5 {
+		return SwitchTarget{}, fmt.Errorf("proto: short switch payload: %d", len(p))
+	}
+
+	return SwitchTarget{
+		Hist:  HistMode(p[0]),
+		Lines: binary.BigEndian.Uint32(p[1:]),
+		ID:    string(p[5:]),
 	}, nil
 }
 

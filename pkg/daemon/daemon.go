@@ -60,7 +60,7 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 		shell = defaultShell()
 	}
 
-	tp, err := pty.Start(shell, nil, sessionEnv(), sess.Cwd, defaultCols, defaultRows)
+	tp, err := pty.Start(shell, nil, sessionEnv(sess), sess.Cwd, defaultCols, defaultRows)
 	if err != nil {
 		_ = sb.Close()
 
@@ -154,8 +154,26 @@ func (d *Daemon) handleConn(nc net.Conn) {
 	c := proto.NewConn(nc)
 	defer func() { _ = c.Close() }()
 
-	att, ok := readAttach(c)
-	if !ok {
+	mt, payload, err := c.Read()
+	if err != nil {
+		return
+	}
+
+	// A MsgSwitch connection is a control request from a tm running inside this
+	// session: forward it to the attached relay and close, without attaching (so
+	// the current client is not displaced).
+	if mt == proto.MsgSwitch {
+		d.forwardSwitch(payload)
+
+		return
+	}
+
+	if mt != proto.MsgAttach {
+		return
+	}
+
+	att, err := proto.DecodeAttach(payload)
+	if err != nil {
 		return
 	}
 
@@ -172,19 +190,16 @@ func (d *Daemon) handleConn(nc net.Conn) {
 	d.mu.Unlock()
 }
 
-// readAttach reads and decodes the mandatory first Attach frame.
-func readAttach(c *proto.Conn) (proto.Attach, bool) {
-	mt, payload, err := c.Read()
-	if err != nil || mt != proto.MsgAttach {
-		return proto.Attach{}, false
-	}
+// forwardSwitch relays a switch request to the currently attached client (the
+// relay), telling it to re-attach to another session. It is best-effort: with no
+// client attached there is nothing to hand over.
+func (d *Daemon) forwardSwitch(payload []byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	att, err := proto.DecodeAttach(payload)
-	if err != nil {
-		return proto.Attach{}, false
+	if d.client != nil {
+		_ = d.client.Write(proto.MsgSwitchTo, payload)
 	}
-
-	return att, true
 }
 
 // register makes c the active client (displacing any previous one) and replays
@@ -286,14 +301,29 @@ func (d *Daemon) shutdown(code int) {
 	})
 }
 
-// sessionEnv returns the environment for the shell, ensuring TERM is set.
-func sessionEnv() []string {
-	env := os.Environ()
-	for _, e := range env {
-		if strings.HasPrefix(e, "TERM=") {
-			return env
+// sessionEnv returns the environment for the session's shell: the daemon's
+// environment with TERM ensured and config.EnvSession set to the session id, so a
+// tm launched inside the session knows which session it is in. Any EnvSession
+// inherited from an outer session is dropped, so a nested session reports itself.
+func sessionEnv(sess store.Session) []string {
+	out := make([]string, 0, len(os.Environ())+2)
+	hasTerm := false
+
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, config.EnvSession+"=") {
+			continue // replaced below so nesting reports the innermost session
 		}
+
+		if strings.HasPrefix(e, "TERM=") {
+			hasTerm = true
+		}
+
+		out = append(out, e)
 	}
 
-	return append(env, "TERM=xterm-256color")
+	if !hasTerm {
+		out = append(out, "TERM=xterm-256color")
+	}
+
+	return append(out, config.EnvSession+"="+sess.ID)
 }

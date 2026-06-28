@@ -31,6 +31,13 @@ type Controller interface {
 	AttachCmd(id string, hist proto.HistMode, lines uint32) *exec.Cmd
 	// CreateAndSpawn creates a session in ns and starts its daemon, returning its id.
 	CreateAndSpawn(ns, name string) (string, error)
+	// CurrentSession returns the name of the session this tm is running inside
+	// (when launched from a session's shell), or "" if not in a session.
+	CurrentSession() string
+	// Switch hands the current session's relay to another session, used in place
+	// of AttachCmd when this tm is running inside a session so picking a session
+	// moves the terminal there instead of nesting a new relay.
+	Switch(id string, hist proto.HistMode, lines uint32) error
 	// DefaultSessionName proposes a unique default name for a new session in ns.
 	DefaultSessionName(ns string) string
 	// Reap drops sessions whose daemon is no longer running and reports how many
@@ -112,6 +119,10 @@ type Model struct {
 	ctrl Controller
 	ns   string
 
+	// curSession is the name of the session this tm is running inside, or "" when
+	// not launched from within a session. Shown in the header as a nesting hint.
+	curSession string
+
 	mode mode
 
 	pick    picker
@@ -130,6 +141,7 @@ type Model struct {
 // New builds the menu model over a store and controller.
 func New(st *store.Store, ctrl Controller) Model {
 	m := Model{st: st, ctrl: ctrl, ns: store.DefaultNamespace, input: newInput("> "), pick: newPicker()}
+	m.curSession = ctrl.CurrentSession()
 	m.showMenu()
 
 	return m
@@ -235,6 +247,11 @@ func (m *Model) showNamespaces(p pickPurpose) {
 // relayDoneMsg is delivered when the relay subprocess returns.
 type relayDoneMsg struct{ err error }
 
+// switchDoneMsg is delivered when an in-session switch request has been sent (or
+// failed). On success this tm quits, leaving the handed-over relay showing the
+// target session.
+type switchDoneMsg struct{ err error }
+
 // spawnedMsg is delivered when a new session's daemon has started.
 type spawnedMsg struct {
 	id  string
@@ -270,6 +287,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// session's shell exited — means we're done driving a session: leave tm
 		// and drop back to the launching shell, with every session still running.
 		// Run tm again to pick up another one.
+		m.quit = true
+
+		return m, tea.Quit
+	case switchDoneMsg:
+		if msg.err != nil {
+			m.status = "switch failed: " + msg.err.Error()
+			m.showMenu()
+
+			return m, nil
+		}
+
+		// The relay we are running inside has been handed to the target session;
+		// quit so this menu gets out of the way and the relay shows the target.
 		m.quit = true
 
 		return m, tea.Quit
@@ -311,6 +341,12 @@ func reapNoun(n int) string {
 }
 
 func (m Model) attach(id string, hist proto.HistMode, lines uint32) tea.Cmd {
+	// When running inside a session, hand that session's relay to the target
+	// instead of nesting a new relay under the current one.
+	if m.curSession != "" {
+		return func() tea.Msg { return switchDoneMsg{m.ctrl.Switch(id, hist, lines)} }
+	}
+
 	cmd := m.ctrl.AttachCmd(id, hist, lines)
 
 	return tea.ExecProcess(cmd, func(err error) tea.Msg { return relayDoneMsg{err} })
@@ -558,7 +594,12 @@ func (m Model) viewPick() string {
 
 	var b strings.Builder
 
-	b.WriteString(th.title.Render("tm") + "  " + th.dim.Render("namespace: "+m.ns) + "\n\n")
+	header := th.title.Render("tm") + "  " + th.dim.Render("namespace: "+m.ns)
+	if m.curSession != "" {
+		header += "  " + th.session.Render("in session: "+m.curSession)
+	}
+
+	b.WriteString(header + "\n\n")
 	b.WriteString(m.pick.view())
 	b.WriteString("\n" + m.footer())
 
@@ -570,8 +611,14 @@ func (m Model) footer() string {
 
 	keys := `↑/↓ move · type to filter · enter select · esc back`
 	if m.pickFor == pickMenu {
-		keys = "↑/↓ move · type to filter · enter select · " +
-			`esc quit (sessions keep running) · Ctrl-\ in a session detaches to your shell`
+		if m.curSession != "" {
+			// Inside a session, picking another one switches this terminal to it
+			// rather than nesting; esc returns to the current session.
+			keys = "↑/↓ move · type to filter · enter switch session · esc back to current session"
+		} else {
+			keys = "↑/↓ move · type to filter · enter select · " +
+				`esc quit (sessions keep running) · Ctrl-\ in a session detaches to your shell`
+		}
 	}
 
 	help := th.dim.Render(keys)
@@ -590,18 +637,20 @@ func (m Model) viewInput() string {
 }
 
 type theme struct {
-	title  lipgloss.Style
-	dim    lipgloss.Style
-	sel    lipgloss.Style
-	status lipgloss.Style
+	title   lipgloss.Style
+	dim     lipgloss.Style
+	sel     lipgloss.Style
+	status  lipgloss.Style
+	session lipgloss.Style
 }
 
 // styles builds the lipgloss styles once, on first render.
 var styles = sync.OnceValue(func() theme {
 	return theme{
-		title:  lipgloss.NewStyle().Bold(true),
-		dim:    lipgloss.NewStyle().Faint(true),
-		sel:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-		status: lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
+		title:   lipgloss.NewStyle().Bold(true),
+		dim:     lipgloss.NewStyle().Faint(true),
+		sel:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
+		status:  lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
+		session: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),
 	}
 })

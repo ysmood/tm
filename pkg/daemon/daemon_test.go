@@ -108,6 +108,81 @@ func TestAttachInputOutputAndExit(t *testing.T) {
 	g.Is(gerr, store.ErrNotFound)
 }
 
+// The daemon exports the session id to its shell as config.EnvSession, so a tm
+// launched inside the session can tell which session it is running in.
+func TestSessionShellHasSessionEnv(t *testing.T) {
+	g, st, p := setupDaemon(t)
+	sess := makeSession(g, st, "envid")
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	nc, c := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistNone, Cols: 80, Rows: 24})
+	defer nc.Close()
+
+	// The expanded value (ENVMARK-envid-END) appears only in the command's output,
+	// not the terminal echo of the unexpanded command, so a match proves the shell
+	// saw the variable set.
+	g.E(c.Write(proto.MsgInput, []byte("echo ENVMARK-$"+config.EnvSession+"-END\n")))
+	g.True(readUntil(nc, c, "ENVMARK-envid-END", 10*time.Second))
+}
+
+// A MsgSwitch connection tells the daemon to hand its attached client (the
+// relay) to another session: the daemon forwards it as MsgSwitchTo and does not
+// displace the client.
+func TestSwitchForwardedToClient(t *testing.T) {
+	g, st, p := setupDaemon(t)
+	sess := makeSession(g, st, "swsrc")
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	nc, c := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistNone, Cols: 80, Rows: 24})
+	defer nc.Close()
+
+	// Make sure the client is fully registered and serving before switching, so
+	// the forward has a client to target.
+	g.E(c.Write(proto.MsgInput, []byte("echo ready-marker\n")))
+	g.True(readUntil(nc, c, "ready-marker", 10*time.Second))
+
+	// A separate (non-attaching) connection requests the switch, then closes.
+	ctl, derr := proto.Dial(d.Addr())
+	g.E(derr)
+	cc := proto.NewConn(ctl)
+	g.E(cc.Write(proto.MsgSwitch, proto.SwitchTarget{ID: "dest", Hist: proto.HistAll, Lines: 7}.Encode()))
+	_ = ctl.Close()
+
+	// The attached client receives the forwarded target (reading past any shell
+	// startup output), proving it was not displaced.
+	tgt := readSwitchTo(g, nc, c, 5*time.Second)
+	g.Eq(tgt.ID, "dest")
+	g.Eq(tgt.Hist, proto.HistAll)
+	g.Eq(int(tgt.Lines), 7)
+}
+
+// readSwitchTo reads frames until a MsgSwitchTo arrives, skipping output frames.
+func readSwitchTo(g got.G, nc net.Conn, c *proto.Conn, timeout time.Duration) proto.SwitchTarget {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		_ = nc.SetReadDeadline(deadline)
+
+		mt, payload, err := c.Read()
+		g.E(err)
+
+		if mt == proto.MsgSwitchTo {
+			tgt, derr := proto.DecodeSwitchTarget(payload)
+			g.E(derr)
+
+			return tgt
+		}
+	}
+}
+
 // TestAttachAllHistoryExceedsMaxPayload guards the chunked replay: a session
 // whose scrollback is larger than a single frame (proto.MaxPayload) must still
 // replay in full on a HistAll attach. Sending it as one frame would be rejected

@@ -3,6 +3,7 @@ package app
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
@@ -29,6 +30,56 @@ func (c *controller) AttachCmd(id string, hist proto.HistMode, lines uint32) *ex
 		"--hist", strconv.Itoa(int(hist)),
 		"--lines", strconv.Itoa(int(lines)),
 	)
+}
+
+// CurrentSession returns the name of the session this tm is running inside, or
+// "" if tm was not launched from within a session's shell. It reads the session
+// marker the daemon sets in every session shell's environment, then resolves the
+// name from the store (returning "" if the session no longer exists).
+func (c *controller) CurrentSession() string {
+	id := os.Getenv(config.EnvSession)
+	if id == "" {
+		return ""
+	}
+
+	s, err := c.st.GetSession(id)
+	if err != nil {
+		return ""
+	}
+
+	return s.Name
+}
+
+// Switch hands the relay of the session this tm is running inside over to another
+// session, so selecting a session from within one moves this terminal there
+// instead of nesting a new relay. It dials the current session's daemon, sends a
+// switch request, and waits for the daemon to forward it (signalled by the daemon
+// closing the connection). It is only meaningful when CurrentSession() != "".
+func (c *controller) Switch(id string, hist proto.HistMode, lines uint32) error {
+	cur := os.Getenv(config.EnvSession)
+	if cur == "" {
+		return errors.New("not running inside a session")
+	}
+
+	nc, err := proto.Dial(proto.SockAddr(c.st.Paths(), cur))
+	if err != nil {
+		return err
+	}
+
+	defer func() { _ = nc.Close() }()
+
+	conn := proto.NewConn(nc)
+
+	tgt := proto.SwitchTarget{ID: id, Hist: hist, Lines: lines}
+	if err := conn.Write(proto.MsgSwitch, tgt.Encode()); err != nil {
+		return err
+	}
+
+	// Block until the daemon has forwarded the request and closed, so the switch
+	// is delivered before this menu exits.
+	_, _, _ = conn.Read()
+
+	return nil
 }
 
 // DefaultSessionName proposes a unique default name for a new session in ns.
@@ -116,7 +167,7 @@ func RunAttach(id string, hist proto.HistMode, lines uint32) error {
 		return err
 	}
 
-	return attach.Run(proto.SockAddr(p, id), attach.Options{Hist: hist, Lines: lines})
+	return attach.Run(p, id, attach.Options{Hist: hist, Lines: lines})
 }
 
 func newID() (string, error) {
