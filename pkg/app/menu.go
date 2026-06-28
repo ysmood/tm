@@ -16,6 +16,7 @@ import (
 	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
 	"github.com/ysmood/tm/pkg/tui"
+	"golang.org/x/term"
 )
 
 // controller implements tui.Controller using the store and process spawning.
@@ -156,6 +157,15 @@ func Run() error {
 
 	prog := tea.NewProgram(tui.New(st, &controller{st: st}))
 	_, err = prog.Run()
+
+	// The menu runs the relay via tea.ExecProcess, which re-enters the alternate
+	// screen when the relay returns and then tears the menu down — a path that does
+	// not reliably restore terminal state, so the relay's own reset on detach can be
+	// clobbered. Have the last word here, once Bubble Tea is fully done, so the
+	// terminal (and its scrollback) is left sane on the way back to the shell.
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		_, _ = os.Stdout.Write(attach.TerminalRestore)
+	}
 
 	return err
 }

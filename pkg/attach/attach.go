@@ -20,6 +20,32 @@ import (
 // the launching shell).
 const DefaultDetachKey = 0x1c
 
+// TerminalRestore returns the local terminal to a sane baseline when leaving a
+// session. A session's PTY has its own terminal state, independent of the outer
+// terminal's: a full-screen program run inside it (vim, less, htop, a git pager,
+// any TUI) switches on the alternate screen buffer, mouse reporting, a scroll
+// region, bracketed paste, etc. Those modes are forwarded to the outer terminal
+// live, and detaching abandons the session mid-state, so without undoing them
+// the outer terminal is left, e.g., stuck in the alternate screen buffer — where
+// the scroll wheel finds no scrollback — or with mouse reporting on, where the
+// wheel emits escape codes instead of scrolling. Multiplexers (tmux, screen)
+// reset the terminal on detach for exactly this reason.
+//
+// It deliberately stops short of a full RIS reset (ESC c), which would also wipe
+// the terminal's scrollback — the very thing the user wants back.
+var TerminalRestore = []byte(
+	"\x1b[?1049l" + // leave the alternate screen buffer (restore main + scrollback)
+		"\x1b[?1000l\x1b[?1002l\x1b[?1003l" + // disable mouse click / button / any-motion tracking
+		"\x1b[?1005l\x1b[?1006l\x1b[?1015l" + // disable UTF-8 / SGR / urxvt mouse encodings
+		"\x1b[?1004l" + // disable focus reporting
+		"\x1b[?2004l" + // disable bracketed paste
+		"\x1b[?7h" + // re-enable auto-wrap (DECAWM)
+		"\x1b[?1l\x1b>" + // normal cursor keys (DECCKM) and keypad (DECKPNM)
+		"\x1b[r" + // reset the scroll region to the full screen (DECSTBM)
+		"\x1b(B" + // select US-ASCII for the G0 charset
+		"\x1b[?25h" + // show the cursor
+		"\x1b[m") // reset SGR colors / attributes
+
 // Options configures an attach session.
 type Options struct {
 	Hist      proto.HistMode
@@ -84,7 +110,13 @@ func runRelay(opt Options, in io.Reader, out io.Writer, inFd int, raw bool, addr
 			return err
 		}
 
-		defer func() { _ = term.Restore(inFd, old) }()
+		// On exit (detach or the session ending), undo any terminal modes the
+		// session's programs left set before handing the terminal back, so the
+		// outer shell — notably its scrollback — behaves normally again.
+		defer func() {
+			_, _ = out.Write(TerminalRestore)
+			_ = term.Restore(inFd, old)
+		}()
 	}
 
 	r := &relay{detachKey: opt.DetachKey, ready: make(chan struct{})}
