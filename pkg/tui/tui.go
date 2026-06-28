@@ -31,6 +31,10 @@ type Controller interface {
 	CreateAndSpawn(ns, name string) (string, error)
 	// DefaultSessionName proposes a unique default name for a new session in ns.
 	DefaultSessionName(ns string) string
+	// Reap drops sessions whose daemon is no longer running and reports how many
+	// it removed. The menu calls it after a failed attach so a dead session stops
+	// reappearing in the list (otherwise selecting it again bounces back here forever).
+	Reap() int
 }
 
 type cmdID int
@@ -246,7 +250,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case relayDoneMsg:
 		if msg.err != nil {
-			m.status = "session ended: " + msg.err.Error()
+			// A relay error means the daemon was unreachable. Reap any sessions
+			// whose daemon has died so the dead one drops out of the menu instead
+			// of luring the user into selecting it and bouncing back here again.
+			if n := m.ctrl.Reap(); n > 0 {
+				m.status = "removed " + reapNoun(n)
+			} else {
+				m.status = "session ended: " + msg.err.Error()
+			}
 		} else {
 			m.status = ""
 		}
@@ -279,6 +290,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// reapNoun renders a count of removed-because-unreachable sessions for the
+// status line, e.g. "1 unreachable session" or "3 unreachable sessions".
+func reapNoun(n int) string {
+	if n == 1 {
+		return "1 unreachable session"
+	}
+
+	return strconv.Itoa(n) + " unreachable sessions"
 }
 
 func (m Model) attach(id string, hist proto.HistMode, lines uint32) tea.Cmd {

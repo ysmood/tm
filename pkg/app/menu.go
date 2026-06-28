@@ -76,6 +76,24 @@ func (c *controller) CreateAndSpawn(ns, name string) (string, error) {
 	return id, nil
 }
 
+// sessionLive reports whether a session's daemon is still running. A
+// not-yet-recorded PID (<= 0, set only briefly while a session is spawning)
+// counts as live so a session mid-spawn is never reaped.
+func sessionLive(s store.Session) bool { return s.PID <= 0 || processAlive(s.PID) }
+
+// Reap drops sessions whose daemon is no longer running and reports how many it
+// removed. The menu calls it after a failed attach: a session whose daemon was
+// killed (or whose socket vanished, e.g. after a reboot) lingers in the store
+// with a stale PID, so attaching bounces straight back to the menu — and
+// without reaping it the user can reselect it and bounce forever.
+func (c *controller) Reap() int {
+	before, _ := c.st.ListSessions()
+	_ = c.st.Prune(sessionLive)
+	after, _ := c.st.ListSessions()
+
+	return len(before) - len(after)
+}
+
 // Run launches the interactive menu. It prunes dead sessions on entry.
 func Run() error {
 	st, err := store.Open()
@@ -83,7 +101,7 @@ func Run() error {
 		return err
 	}
 
-	_ = st.Prune(func(s store.Session) bool { return s.PID <= 0 || processAlive(s.PID) })
+	_ = st.Prune(sessionLive)
 
 	prog := tea.NewProgram(tui.New(st, &controller{st: st}))
 	_, err = prog.Run()

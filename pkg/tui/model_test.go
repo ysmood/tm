@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"os/exec"
 	"slices"
 	"testing"
@@ -18,6 +19,7 @@ type fakeCtrl struct{}
 func (fakeCtrl) AttachCmd(string, proto.HistMode, uint32) *exec.Cmd { return exec.Command("true") }
 func (fakeCtrl) CreateAndSpawn(string, string) (string, error)      { return "id", nil }
 func (fakeCtrl) DefaultSessionName(string) string                   { return "default-name" }
+func (fakeCtrl) Reap() int                                          { return 0 }
 
 func newStore(g got.G, t *testing.T) *store.Store {
 	p := config.Paths{Home: t.TempDir(), Runtime: t.TempDir()}
@@ -47,6 +49,59 @@ var (
 
 func has(list []string, v string) bool {
 	return slices.Contains(list, v)
+}
+
+// reapCtrl is a Controller whose Reap prunes a backing store, so tests can
+// observe the menu dropping a dead session after a failed attach.
+type reapCtrl struct {
+	fakeCtrl
+	st     *store.Store
+	called bool
+}
+
+func (c *reapCtrl) Reap() int {
+	c.called = true
+
+	before, _ := c.st.ListSessions()
+	// All sessions in this fake are treated as dead (PID 0 stays, real PIDs go);
+	// the test seeds a dead one to be removed.
+	_ = c.st.Prune(func(s store.Session) bool { return false })
+	after, _ := c.st.ListSessions()
+
+	return len(before) - len(after)
+}
+
+// sessionRows counts the session (non-command) rows currently in the menu.
+func sessionRows(m Model) int {
+	n := 0
+
+	for _, it := range m.pick.all {
+		if p, ok := it.payload.(menuPayload); ok && !p.isCmd {
+			n++
+		}
+	}
+
+	return n
+}
+
+// A failed attach (the relay couldn't reach the daemon) reaps the dead session
+// so it drops out of the menu instead of luring the user into an endless
+// select-bounce loop.
+func TestModelReapsDeadSessionOnAttachError(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "dead", Name: "dead", Namespace: store.DefaultNamespace}))
+
+	ctrl := &reapCtrl{st: st}
+	m := New(st, ctrl)
+	g.Eq(sessionRows(m), 1) // the session shows up at first
+
+	// Simulate the relay exiting with an error (e.g. "connection refused").
+	m = send(m, relayDoneMsg{err: errors.New("connection refused")})
+
+	g.True(ctrl.called)
+	g.Eq(sessionRows(m), 0) // the dead session is gone, so it can't be reselected
+	g.Has(m.status, "unreachable")
 }
 
 // Selecting [detach session] quits tm (sessions keep running in the background).
