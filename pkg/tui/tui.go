@@ -610,9 +610,11 @@ func (m Model) viewPick() string {
 		header += "  " + th.session.Render("in session: "+m.curSession)
 	}
 
-	b.WriteString(header + "\n\n")
+	b.WriteString(header)
+	b.WriteString("\n\n")
 	b.WriteString(m.pick.view())
-	b.WriteString("\n" + m.footer())
+	b.WriteString("\n")
+	b.WriteString(m.footer())
 
 	return b.String()
 }
@@ -643,7 +645,7 @@ func (m Model) footer() string {
 func (m Model) viewInput() string {
 	th := styles()
 
-	return th.title.Render("tm") + "\n\n" + m.input.View() + "\n\n" +
+	return th.title.Render("TM") + "\n\n" + m.input.View() + "\n\n" +
 		th.dim.Render("enter confirm · esc cancel")
 }
 
