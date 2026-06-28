@@ -129,6 +129,92 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	g.False(bytes.Contains([]byte(out.String()), []byte{DefaultDetachKey}))
 }
 
+// switchServer accepts one connection, consumes the Attach, then asks the relay
+// to switch to target. It mimics a daemon whose in-session tm picked another
+// session: the relay should reset the terminal before re-attaching, since the
+// session it is leaving may have left it in the alternate screen buffer.
+func switchServer(g got.G, addr, target string) {
+	ln, err := proto.Listen(addr)
+	g.E(err)
+	g.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+
+		c := proto.NewConn(conn)
+		if mt, _, rerr := c.Read(); rerr != nil || mt != proto.MsgAttach {
+			return
+		}
+
+		_ = c.Write(proto.MsgSwitchTo, proto.SwitchTarget{ID: target}.Encode())
+	}()
+}
+
+// TestRelayRestoresTerminalOnSwitch proves that switching sessions resets the
+// outer terminal between them. The leaving session may have left the terminal in
+// the alternate screen buffer with the cursor hidden (tm's menu runs there), and
+// nothing else resets it on this path — so the relay must, before the target
+// session's output lands, or the screen never clears and the cursor stays hidden.
+func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(10 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmsw")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+
+	addr1 := filepath.Join(rt, "s1.sock")
+	addr2 := filepath.Join(rt, "s2.sock")
+
+	switchServer(g, addr1, "s2")
+	detached := echoServer(g, addr2)
+
+	inR, inW := io.Pipe()
+	out := &safeBuf{}
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+			func(id string) string {
+				if id == "s2" {
+					return addr2
+				}
+
+				return addr1
+			}, "s1")
+	}()
+
+	// Once the relay has re-attached to the target, its output must carry the
+	// terminal reset emitted on the way out of the first session.
+	g.True(waitFor(func() bool {
+		return strings.Contains(out.String(), string(TerminalRestore))
+	}, 5*time.Second))
+
+	// The reset must include leaving the alternate screen buffer and showing the
+	// cursor — the two symptoms of an un-reset switch.
+	o := out.String()
+	g.Has(o, "\x1b[?1049l")
+	g.Has(o, "\x1b[?25h")
+
+	// The relay is now driving the target session; detach to end it cleanly.
+	_, err = inW.Write([]byte{DefaultDetachKey})
+	g.E(err)
+
+	select {
+	case rerr := <-done:
+		g.E(rerr)
+	case <-time.After(5 * time.Second):
+		g.Logf("relay did not return after detach key")
+		g.FailNow()
+	}
+
+	g.True(detached())
+}
+
 func waitFor(cond func() bool, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

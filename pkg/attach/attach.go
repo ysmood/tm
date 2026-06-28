@@ -143,6 +143,17 @@ func runRelay(opt Options, in io.Reader, out io.Writer, inFd int, raw bool, addr
 			return nil // detached or the session exited
 		}
 
+		// Switching to another session. The session we are leaving may have left
+		// the outer terminal in the alternate screen buffer, with mouse reporting
+		// on, or the cursor hidden — e.g. a full-screen app, or tm's own menu
+		// (which runs in the alternate screen), was running in it. Unlike a detach,
+		// nothing else resets the terminal here: the menu's teardown went to the
+		// old session's PTY, which we have already left, so it never reaches this
+		// terminal. Reset to baseline before re-attaching, so the next session's
+		// output (and history replay) lands on a clean screen with a visible cursor
+		// instead of inheriting the previous session's leftover modes.
+		_, _ = out.Write(TerminalRestore)
+
 		id, opt.Hist, opt.Lines = next.ID, next.Hist, next.Lines
 	}
 }
