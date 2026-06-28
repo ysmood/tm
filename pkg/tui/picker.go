@@ -34,7 +34,12 @@ type listAdapter struct{ pickerItem }
 
 func (a listAdapter) FilterValue() string { return a.matchText() }
 
-// pickerDelegate renders one row in the minimal "> selected" style.
+// cursorGlyph marks the highlighted row. It and the trailing space are one cell
+// each, matching the two-space indent of unselected rows so labels stay aligned.
+const cursorGlyph = "●"
+
+// pickerDelegate renders one row: a purple circle plus the label when selected,
+// a plain indented label otherwise.
 type pickerDelegate struct{}
 
 func (pickerDelegate) Height() int                         { return 1 }
@@ -48,7 +53,7 @@ func (pickerDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	}
 
 	if index == m.Index() {
-		_, _ = io.WriteString(w, "> "+styles().sel.Render(a.label))
+		_, _ = io.WriteString(w, styles().sel.Render(cursorGlyph+" "+a.label))
 	} else {
 		_, _ = io.WriteString(w, "  "+a.label)
 	}

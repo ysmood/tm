@@ -78,8 +78,8 @@ type scrollbackPayload struct {
 type mode int
 
 const (
-	modePick mode = iota // a type-to-filter menu (main, scrollback, namespace)
-	modeInput            // a free-text prompt
+	modePick  mode = iota // a type-to-filter menu (main, scrollback, namespace)
+	modeInput             // a free-text prompt
 )
 
 // pickPurpose says what the active picker selects, so Enter dispatches correctly.
@@ -141,10 +141,14 @@ func newInput(prompt string) textarea.Model {
 	ta.SetHeight(1)
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 
+	azure := lipgloss.Color("#00e6cb")
+
 	s := ta.Styles()
 	s.Cursor.Blink = false
 	s.Focused.CursorLine = lipgloss.NewStyle()
 	s.Blurred.CursorLine = lipgloss.NewStyle()
+	s.Focused.Prompt = s.Focused.Prompt.Foreground(azure)
+	s.Blurred.Prompt = s.Blurred.Prompt.Foreground(azure)
 	ta.SetStyles(s)
 
 	return ta
@@ -153,17 +157,12 @@ func newInput(prompt string) textarea.Model {
 // Init satisfies tea.Model.
 func (m Model) Init() tea.Cmd { return nil }
 
-// menuItems builds the main menu: the fixed commands followed by the sessions
-// in the active namespace.
+// menuItems builds the main menu: the sessions in the active namespace first
+// (attaching is the common action, so they sit at the top and the cursor starts
+// on one), followed by the fixed commands. Ranking is independent of this order,
+// so typing a mnemonic still surfaces its command (see rankItems).
 func (m *Model) menuItems() []pickerItem {
 	items := make([]pickerItem, 0, len(palette)+8)
-	for _, c := range palette {
-		items = append(items, pickerItem{
-			label:   c.label,
-			aliases: c.aliases,
-			payload: menuPayload{isCmd: true, cmdID: c.id},
-		})
-	}
 
 	sessions, _ := m.st.ListByNamespace(m.ns)
 	for _, s := range sessions {
@@ -173,6 +172,14 @@ func (m *Model) menuItems() []pickerItem {
 		}
 
 		items = append(items, pickerItem{label: label, text: s.Name, payload: menuPayload{sess: s}})
+	}
+
+	for _, c := range palette {
+		items = append(items, pickerItem{
+			label:   c.label,
+			aliases: c.aliases,
+			payload: menuPayload{isCmd: true, cmdID: c.id},
+		})
 	}
 
 	return items

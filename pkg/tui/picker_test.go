@@ -29,6 +29,8 @@ func TestPickerTypeToFilter(t *testing.T) {
 	v := m.View().Content
 	g.Has(v, "[new session]")
 	g.Has(v, "webserver")
+	// Sessions are listed ahead of the commands.
+	g.True(strings.Index(v, "webserver") < strings.Index(v, "[new session]"))
 
 	// Typing filters live: the matching session stays, unrelated commands drop.
 	typed := typeStr(m, "web")
@@ -66,7 +68,7 @@ func TestPickerEmacsNavKeys(t *testing.T) {
 		return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
 	}
 
-	// From the top, ctrl+n moves down to [detach session]; ctrl+p moves back up.
+	// From the top, ctrl+n moves down one row; ctrl+p moves back up.
 	g.Eq(m.pick.list.Index(), 0)
 	m = send(m, ctrl('n'))
 	g.Eq(m.pick.list.Index(), 1)
