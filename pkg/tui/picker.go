@@ -8,13 +8,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// pickerItem is one selectable row. aliases, when non-empty, enable mnemonic
-// matching and rank the item in a band above plain fuzzy matches (used for the
-// fixed commands). text overrides the fuzzy-match target (it defaults to
-// label). payload carries whatever the caller needs when the row is chosen.
+// pickerItem is one selectable row. cmd marks the fixed [bracketed] commands so
+// the delegate tints them apart from sessions. text overrides the fuzzy-match
+// target (it defaults to label). payload carries whatever the caller needs when
+// the row is chosen.
 type pickerItem struct {
 	label   string
-	aliases []string
+	cmd     bool
 	text    string
 	payload any
 }
@@ -39,7 +39,8 @@ func (a listAdapter) FilterValue() string { return a.matchText() }
 const cursorGlyph = "●"
 
 // pickerDelegate renders one row: a purple circle plus the label when selected,
-// a plain indented label otherwise.
+// a plain indented label otherwise. Command rows are tinted so they read apart
+// from the sessions above them.
 type pickerDelegate struct{}
 
 func (pickerDelegate) Height() int                         { return 1 }
@@ -52,9 +53,12 @@ func (pickerDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		return
 	}
 
-	if index == m.Index() {
+	switch {
+	case index == m.Index():
 		_, _ = io.WriteString(w, styles().sel.Render(cursorGlyph+" "+a.label))
-	} else {
+	case a.cmd:
+		_, _ = io.WriteString(w, "  "+styles().cmd.Render(a.label))
+	default:
 		_, _ = io.WriteString(w, "  "+a.label)
 	}
 }

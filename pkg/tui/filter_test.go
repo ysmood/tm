@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/ysmood/got"
@@ -10,14 +11,15 @@ import (
 func paletteItems() []pickerItem {
 	items := make([]pickerItem, len(palette))
 	for i, c := range palette {
-		items[i] = pickerItem{label: c.label, aliases: c.aliases, payload: menuPayload{isCmd: true, cmdID: c.id}}
+		items[i] = pickerItem{label: c.label, cmd: true, payload: menuPayload{isCmd: true, cmdID: c.id}}
 	}
 
 	return items
 }
 
-// Each mnemonic must select its intended command first.
-func TestPaletteAliasesRankCorrectly(t *testing.T) {
+// Commands are found by fuzzy-matching their bracketed labels: typing a
+// command's letters in order surfaces it first.
+func TestPaletteFuzzyRanksCorrectly(t *testing.T) {
 	g := got.T(t)
 	items := paletteItems()
 
@@ -29,14 +31,29 @@ func TestPaletteAliasesRankCorrectly(t *testing.T) {
 		g.Desc("query %q ranked the wrong command first", query).Eq(items[order[0]].payload.(menuPayload).cmdID, want)
 	}
 
-	check("ns", cmdNewSession)
 	check("ds", cmdDetachSession)
 	check("nn", cmdNewNamespace)
 	check("un", cmdUseNamespace)
 	check("dn", cmdDropNamespace)
 	check("detach", cmdDetachSession)
 	check("drop", cmdDropNamespace)
-	check("new", cmdNewSession)
+}
+
+// Random in-order characters filter the palette like any other fuzzy field, with
+// no per-command aliases: "[n" matches both [new session] and [new namespace].
+func TestPaletteFuzzyMatchesMultiple(t *testing.T) {
+	g := got.T(t)
+	items := paletteItems()
+
+	order := rankItems(items, "[n")
+	matched := make([]cmdID, 0, len(order))
+
+	for _, idx := range order {
+		matched = append(matched, items[idx].payload.(menuPayload).cmdID)
+	}
+
+	g.True(slices.Contains(matched, cmdNewSession))
+	g.True(slices.Contains(matched, cmdNewNamespace))
 }
 
 func TestFilterEmptyQueryKeepsOrder(t *testing.T) {
@@ -45,7 +62,7 @@ func TestFilterEmptyQueryKeepsOrder(t *testing.T) {
 	g.Eq(order, []int{0, 1, 2, 3, 4})
 }
 
-// Sessions are found by fuzzy name match and rank below exact command mnemonics.
+// Sessions are found by the same fuzzy name match as everything else.
 func TestFilterMatchesSessions(t *testing.T) {
 	g := got.T(t)
 

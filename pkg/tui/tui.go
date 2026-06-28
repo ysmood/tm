@@ -59,20 +59,19 @@ const (
 )
 
 type paletteCmd struct {
-	id      cmdID
-	label   string
-	aliases []string
+	id    cmdID
+	label string
 }
 
-// palette holds the fixed commands. Each lists alias tokens (mnemonic first) so
-// typing "ns"/"nn"/"un"/"dn"/"ds" — or a word like "detach"/"drop" — selects
-// the intended command deterministically.
+// palette holds the fixed commands. The bracketed labels are fuzzy-matched like
+// everything else (see rankItems), so typing the letters of a command in order
+// surfaces it — "ds" finds [detach session], "[n" the two [new …] commands.
 var palette = []paletteCmd{
-	{cmdNewSession, "[new session]", []string{"ns", "new session", "new"}},
-	{cmdDetachSession, "[detach session]", []string{"ds", "detach session", "detach"}},
-	{cmdNewNamespace, "[new namespace]", []string{"nn", "new namespace", "namespace"}},
-	{cmdUseNamespace, "[use namespace]", []string{"un", "use namespace", "use"}},
-	{cmdDropNamespace, "[drop namespace]", []string{"dn", "drop namespace", "drop"}},
+	{cmdNewSession, "[new session]"},
+	{cmdDetachSession, "[detach session]"},
+	{cmdNewNamespace, "[new namespace]"},
+	{cmdUseNamespace, "[use namespace]"},
+	{cmdDropNamespace, "[drop namespace]"},
 }
 
 // menuPayload is the data attached to a main-menu row: either a command or a
@@ -183,7 +182,7 @@ func (m Model) Init() tea.Cmd { return nil }
 // menuItems builds the main menu: the sessions in the active namespace first
 // (attaching is the common action, so they sit at the top and the cursor starts
 // on one), followed by the fixed commands. Ranking is independent of this order,
-// so typing a mnemonic still surfaces its command (see rankItems). The session
+// so fuzzy-typing a command's letters still surfaces it (see rankItems). The session
 // this tm is running inside is left out — you are already attached to it, so
 // re-selecting it would do nothing useful.
 func (m *Model) menuItems() []pickerItem {
@@ -206,7 +205,7 @@ func (m *Model) menuItems() []pickerItem {
 	for _, c := range palette {
 		items = append(items, pickerItem{
 			label:   c.label,
-			aliases: c.aliases,
+			cmd:     true,
 			payload: menuPayload{isCmd: true, cmdID: c.id},
 		})
 	}
@@ -653,6 +652,7 @@ type theme struct {
 	title   lipgloss.Style
 	dim     lipgloss.Style
 	sel     lipgloss.Style
+	cmd     lipgloss.Style
 	status  lipgloss.Style
 	session lipgloss.Style
 }
@@ -663,6 +663,7 @@ var styles = sync.OnceValue(func() theme {
 		title:   lipgloss.NewStyle().Bold(true),
 		dim:     lipgloss.NewStyle().Faint(true),
 		sel:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
+		cmd:     lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
 		status:  lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
 		session: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),
 	}
