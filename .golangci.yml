@@ -1,0 +1,47 @@
+version: "2"
+
+linters:
+  default: all
+  disable:
+    - gochecknoinits
+    - paralleltest
+    - wrapcheck
+    - gosec
+    - gochecknoglobals
+    - musttag
+    - depguard # no import allow-list defined; would otherwise deny everything
+    # Stylistic linters that fight idiomatic Go / the got test framework:
+    - varnamelen # short receiver/loop names (g, m, c, b) are idiomatic here
+    - exhaustruct # not every struct literal should set every field
+    - mnd # buffer sizes, file perms, and timeouts read fine inline
+    - nonamedreturns # named returns document multi-value helpers
+    - ireturn # tea.Model / interface returns are required by APIs
+    - noinlineerr # `if err := f(); err != nil` is idiomatic
+    - funcorder # function ordering here follows call flow, not the linter's rule
+    - testpackage # some tests are internal on purpose (to reach unexported funcs)
+    - thelper # got helpers take got.G, not *testing.T, so the rule misfires
+    - usetesting # tests use os.MkdirTemp("/tmp") deliberately (short socket paths)
+    - noctx # detached daemon / build subprocesses intentionally omit a context
+    - err113 # dynamic fmt.Errorf messages are fine for this CLI
+    - exhaustive # message-dispatch switches intentionally ignore other cases
+    - recvcheck # the Bubble Tea Model mixes value (Update/View) and pointer receivers
+  settings:
+    gocyclo:
+      min-complexity: 15
+    cyclop:
+      max-complexity: 15
+    gocognit:
+      min-complexity: 40
+  exclusions:
+    rules:
+      # Tests drive real processes/PTYs and sockets; relax the strictest linters there.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - funlen
+          - gocyclo
+          - gocognit
+          - cyclop
+          - maintidx
+          - dupl
+          - forcetypeassert

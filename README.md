@@ -21,8 +21,13 @@ This command will create a new shell session. It will auto generate a default na
 
 The auto generated name is based on the current working dir, git repo name, or the current time, etc.
 
-All the session info is stored in a single [badger](https://github.com/dgraph-io/badger) database file.
-No client-server like tmux, and no need to worry about the server dying and losing all your sessions.
+All session info is stored as plain files under a single directory (`~/.tm` by default,
+override with the `TM_HOME` environment variable): one small JSON file per session plus its
+scrollback log. There is no database, so the session list loads near-instantly and any number
+of `tm` windows can read it at once with no locking.
+
+There is also no client-server like tmux: each session runs as its own independent background
+process, so there is no shared server that can die and take all your sessions with it.
 
 ### Attach to a session
 
