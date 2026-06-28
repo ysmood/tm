@@ -19,20 +19,22 @@ type fakeCtrl struct{}
 
 func (fakeCtrl) AttachCmd(string, proto.HistMode, uint32) *exec.Cmd { return exec.Command("true") }
 func (fakeCtrl) CreateAndSpawn(string, string) (string, error)      { return "id", nil }
-func (fakeCtrl) CurrentSession() string                             { return "" }
+func (fakeCtrl) CurrentSession() (string, string)                   { return "", "" }
 func (fakeCtrl) Switch(string, proto.HistMode, uint32) error        { return nil }
 func (fakeCtrl) DefaultSessionName(string) string                   { return "default-name" }
 func (fakeCtrl) Reap() int                                          { return 0 }
 
-// sessCtrl reports a current-session name, simulating a tm launched from within
-// a session's shell, and records the id of any switch it is asked to perform.
+// sessCtrl reports a current-session id and name, simulating a tm launched from
+// within a session's shell, and records the id of any switch it is asked to
+// perform.
 type sessCtrl struct {
 	fakeCtrl
+	id         string
 	name       string
 	switchedTo *string
 }
 
-func (c sessCtrl) CurrentSession() string { return c.name }
+func (c sessCtrl) CurrentSession() (string, string) { return c.id, c.name }
 
 func (c sessCtrl) Switch(id string, _ proto.HistMode, _ uint32) error {
 	*c.switchedTo = id
@@ -149,6 +151,29 @@ func TestModelShowsCurrentSession(t *testing.T) {
 	out := New(newStore(g, t), fakeCtrl{})
 	g.Eq(out.curSession, "")
 	g.True(!strings.Contains(out.viewPick(), "in session"))
+}
+
+// The session this tm is running inside is left out of the attach list — you are
+// already attached to it — while other sessions still appear.
+func TestModelHidesCurrentSessionFromList(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: "oth", Name: "other", Namespace: store.DefaultNamespace}))
+
+	m := New(st, sessCtrl{id: "cur", name: "current"})
+
+	g.Eq(sessionRows(m), 1) // only the other session, not the one we are in
+
+	var labels []string
+	for _, it := range m.pick.all {
+		if p, ok := it.payload.(menuPayload); ok && !p.isCmd {
+			labels = append(labels, it.text)
+		}
+	}
+
+	g.True(has(labels, "other"))
+	g.True(!has(labels, "current"))
 }
 
 // Inside a session, picking another session hands the current relay over (a

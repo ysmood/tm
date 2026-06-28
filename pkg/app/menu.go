@@ -33,22 +33,23 @@ func (c *controller) AttachCmd(id string, hist proto.HistMode, lines uint32) *ex
 	)
 }
 
-// CurrentSession returns the name of the session this tm is running inside, or
-// "" if tm was not launched from within a session's shell. It reads the session
-// marker the daemon sets in every session shell's environment, then resolves the
-// name from the store (returning "" if the session no longer exists).
-func (c *controller) CurrentSession() string {
-	id := os.Getenv(config.EnvSession)
+// CurrentSession returns the id and name of the session this tm is running
+// inside, or "", "" if tm was not launched from within a session's shell. It
+// reads the session marker the daemon sets in every session shell's environment,
+// then resolves the name from the store (returning "", "" if the session no
+// longer exists).
+func (c *controller) CurrentSession() (id, name string) {
+	id = os.Getenv(config.EnvSession)
 	if id == "" {
-		return ""
+		return "", ""
 	}
 
 	s, err := c.st.GetSession(id)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 
-	return s.Name
+	return id, s.Name
 }
 
 // Switch hands the relay of the session this tm is running inside over to another

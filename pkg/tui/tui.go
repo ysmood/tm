@@ -31,9 +31,11 @@ type Controller interface {
 	AttachCmd(id string, hist proto.HistMode, lines uint32) *exec.Cmd
 	// CreateAndSpawn creates a session in ns and starts its daemon, returning its id.
 	CreateAndSpawn(ns, name string) (string, error)
-	// CurrentSession returns the name of the session this tm is running inside
-	// (when launched from a session's shell), or "" if not in a session.
-	CurrentSession() string
+	// CurrentSession returns the id and name of the session this tm is running
+	// inside (when launched from a session's shell), or "", "" if not in a session.
+	// The id lets the menu hide the current session from the attach list (you are
+	// already in it); the name is shown in the header as a nesting hint.
+	CurrentSession() (id, name string)
 	// Switch hands the current session's relay to another session, used in place
 	// of AttachCmd when this tm is running inside a session so picking a session
 	// moves the terminal there instead of nesting a new relay.
@@ -122,6 +124,9 @@ type Model struct {
 	// curSession is the name of the session this tm is running inside, or "" when
 	// not launched from within a session. Shown in the header as a nesting hint.
 	curSession string
+	// curSessionID is the id of that session, used to hide it from the attach list
+	// (re-attaching to the session you are already in is a no-op).
+	curSessionID string
 
 	mode mode
 
@@ -141,7 +146,7 @@ type Model struct {
 // New builds the menu model over a store and controller.
 func New(st *store.Store, ctrl Controller) Model {
 	m := Model{st: st, ctrl: ctrl, ns: store.DefaultNamespace, input: newInput("> "), pick: newPicker()}
-	m.curSession = ctrl.CurrentSession()
+	m.curSessionID, m.curSession = ctrl.CurrentSession()
 	m.showMenu()
 
 	return m
@@ -178,12 +183,18 @@ func (m Model) Init() tea.Cmd { return nil }
 // menuItems builds the main menu: the sessions in the active namespace first
 // (attaching is the common action, so they sit at the top and the cursor starts
 // on one), followed by the fixed commands. Ranking is independent of this order,
-// so typing a mnemonic still surfaces its command (see rankItems).
+// so typing a mnemonic still surfaces its command (see rankItems). The session
+// this tm is running inside is left out — you are already attached to it, so
+// re-selecting it would do nothing useful.
 func (m *Model) menuItems() []pickerItem {
 	items := make([]pickerItem, 0, len(palette)+8)
 
 	sessions, _ := m.st.ListByNamespace(m.ns)
 	for _, s := range sessions {
+		if s.ID == m.curSessionID {
+			continue
+		}
+
 		label := s.Name
 		if m.ns == store.AllNamespaces {
 			label = s.Name + "  (" + s.Namespace + ")"
