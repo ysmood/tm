@@ -49,6 +49,20 @@ func has(list []string, v string) bool {
 	return slices.Contains(list, v)
 }
 
+// Selecting [detach session] quits tm (sessions keep running in the background).
+func TestModelDetachSessionQuits(t *testing.T) {
+	g := got.T(t)
+	m := New(newStore(g, t), fakeCtrl{})
+
+	m = typeStr(m, "ds")
+	next, cmd := m.Update(keyEnterMsg)
+
+	g.True(next.(Model).quit)
+	g.NotNil(cmd)
+	_, ok := cmd().(tea.QuitMsg)
+	g.True(ok)
+}
+
 // Typing "nn" then a name creates and switches to a new namespace.
 func TestModelCreateNamespace(t *testing.T) {
 	g := got.T(t)

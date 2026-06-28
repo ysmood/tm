@@ -274,7 +274,12 @@ func (m Model) selectCurrent() (tea.Model, tea.Cmd) {
 	case cmdNewSession:
 		m.enterInput(inputNewSession, "New session name:", m.ctrl.DefaultSessionName(m.targetNamespace()))
 	case cmdDetachSession:
-		m.status = `To detach, press Ctrl-\ while attached to a session.`
+		// In tm's model the menu is the detached state: sessions are independent
+		// daemons that keep running. "Detach" therefore means leave tm entirely
+		// and return to the launching shell, with every session still alive.
+		m.quit = true
+
+		return m, tea.Quit
 	case cmdNewNamespace:
 		m.enterInput(inputNewNamespace, "New namespace name:", "")
 	case cmdUseNamespace:
@@ -555,7 +560,7 @@ func (m Model) viewList() string {
 func (m Model) footer() string {
 	th := styles()
 
-	help := th.dim.Render(`↑/↓ move · enter select · esc quit · Ctrl-\ detaches inside a session`)
+	help := th.dim.Render(`↑/↓ move · enter select · esc quit (sessions keep running) · Ctrl-\ back to menu from a shell`)
 
 	if m.status != "" {
 		return th.status.Render(m.status) + "\n" + help
