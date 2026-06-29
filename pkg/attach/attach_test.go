@@ -16,6 +16,13 @@ import (
 	"github.com/ysmood/tm/pkg/proto"
 )
 
+// relayExit captures runRelay's two return values so a test goroutine can hand
+// both back over one channel.
+type relayExit struct {
+	menu bool
+	err  error
+}
+
 // safeBuf is a goroutine-safe accumulator for the relay's output.
 type safeBuf struct {
 	mu  sync.Mutex
@@ -38,7 +45,7 @@ func (s *safeBuf) String() string {
 
 // echoServer accepts one connection, consumes the Attach, then echoes each
 // Input back as Output until the client detaches. It records whether it saw a
-// Detach (so the test can confirm the detach key never leaked as input).
+// Detach (so the test can confirm the menu key never leaked as input).
 func echoServer(g got.G, addr string) (detached func() bool) {
 	ln, err := proto.Listen(addr)
 	g.E(err)
@@ -101,11 +108,12 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	inR, inW := io.Pipe()
 	out := &safeBuf{}
 
-	done := make(chan error, 1)
+	done := make(chan relayExit, 1)
 
 	go func() {
-		done <- runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+		menu, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
 			func(string) string { return addr }, "x")
+		done <- relayExit{menu: menu, err: rerr}
 	}()
 
 	// Input is forwarded and echoed back as output.
@@ -113,20 +121,21 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	g.E(err)
 	g.True(waitFor(func() bool { return strings.Contains(out.String(), "ping") }, 5*time.Second))
 
-	// The detach key ends the relay and is sent as Detach, not as input.
-	_, err = inW.Write([]byte{DefaultDetachKey})
+	// The menu key ends the relay and is sent as Detach, not as input.
+	_, err = inW.Write([]byte{DefaultMenuKey})
 	g.E(err)
 
 	select {
-	case rerr := <-done:
-		g.E(rerr)
+	case res := <-done:
+		g.E(res.err)
+		g.True(res.menu) // the menu key asks the caller to open the menu
 	case <-time.After(5 * time.Second):
-		g.Logf("relay did not return after detach key")
+		g.Logf("relay did not return after menu key")
 		g.FailNow()
 	}
 
 	g.True(detached())
-	g.False(bytes.Contains([]byte(out.String()), []byte{DefaultDetachKey}))
+	g.False(bytes.Contains([]byte(out.String()), []byte{DefaultMenuKey}))
 }
 
 // switchServer accepts one connection, consumes the Attach, then asks the relay
@@ -175,10 +184,10 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 	inR, inW := io.Pipe()
 	out := &safeBuf{}
 
-	done := make(chan error, 1)
+	done := make(chan relayExit, 1)
 
 	go func() {
-		done <- runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+		menu, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
 			func(id string) string {
 				if id == "s2" {
 					return addr2
@@ -186,6 +195,7 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 
 				return addr1
 			}, "s1")
+		done <- relayExit{menu: menu, err: rerr}
 	}()
 
 	// Once the relay has re-attached to the target, its output must carry the
@@ -200,15 +210,15 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 	g.Has(o, "\x1b[?1049l")
 	g.Has(o, "\x1b[?25h")
 
-	// The relay is now driving the target session; detach to end it cleanly.
-	_, err = inW.Write([]byte{DefaultDetachKey})
+	// The relay is now driving the target session; the menu key ends it cleanly.
+	_, err = inW.Write([]byte{DefaultMenuKey})
 	g.E(err)
 
 	select {
-	case rerr := <-done:
-		g.E(rerr)
+	case res := <-done:
+		g.E(res.err)
 	case <-time.After(5 * time.Second):
-		g.Logf("relay did not return after detach key")
+		g.Logf("relay did not return after menu key")
 		g.FailNow()
 	}
 

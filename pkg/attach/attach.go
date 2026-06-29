@@ -1,7 +1,7 @@
 // Package attach implements the relay: a minimal raw-passthrough client that
 // connects to a session daemon's socket, proxies the local terminal's I/O to
-// the session, and returns when the user presses the detach key or the session
-// exits. It is run as the hidden `tm __attach` subcommand.
+// the session, and returns when the user presses the menu key, the session
+// exits, or local input ends. It is run as the hidden `tm __attach` subcommand.
 package attach
 
 import (
@@ -9,16 +9,18 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ysmood/tm/pkg/config"
 	"github.com/ysmood/tm/pkg/proto"
 	"golang.org/x/term"
 )
 
-// DefaultDetachKey is Ctrl-\ (0x1c): pressing it detaches from the session,
-// which keeps running in the background, and returns to tm (which then exits to
-// the launching shell).
-const DefaultDetachKey = 0x1c
+// DefaultMenuKey is Ctrl-\ (0x1c): pressing it stops proxying and returns to tm
+// so it can open the interactive menu (switch sessions, start a new one, or leave
+// tm for the shell). The session keeps running in the background while the menu is
+// up. Run reports the press to its caller, which reopens the menu and re-attaches.
+const DefaultMenuKey = 0x1c
 
 // TerminalRestore returns the local terminal to a sane baseline when leaving a
 // session. A session's PTY has its own terminal state, independent of the outer
@@ -48,17 +50,20 @@ var TerminalRestore = []byte(
 
 // Options configures an attach session.
 type Options struct {
-	Hist      proto.HistMode
-	Lines     uint32
-	DetachKey byte
+	Hist    proto.HistMode
+	Lines   uint32
+	MenuKey byte
 }
 
 // Run connects to the session id under p, switches the terminal to raw mode, and
-// proxies I/O until the user detaches or the session exits. When the session asks
-// the relay to switch (a tm running inside it picked another session), Run leaves
-// the current session running and re-attaches to the target — so switching moves
-// this one terminal between sessions instead of nesting relays.
-func Run(p config.Paths, id string, opt Options) error {
+// proxies I/O until the user presses the menu key, the session exits, or local
+// input ends. It returns menu=true when the menu key was pressed, so the caller
+// (app.Run) can open the menu and re-attach; menu=false means the session ended
+// or input stopped, so the caller should leave tm. When the session asks the
+// relay to switch (a tm running inside it picked another session), Run leaves the
+// current session running and re-attaches to the target — so switching moves this
+// one terminal between sessions instead of nesting relays.
+func Run(p config.Paths, id string, opt Options) (menu bool, err error) {
 	in, closeIn := openInput()
 	defer closeIn()
 
@@ -70,10 +75,16 @@ func Run(p config.Paths, id string, opt Options) error {
 // input reader forwards keystrokes to whichever session is current, so switching
 // sessions never leaves a second reader competing for the terminal's input.
 type relay struct {
-	detachKey byte
+	menuKey byte
 
 	ready     chan struct{} // closed once the first session connection is set
 	readyOnce sync.Once
+
+	// menu records that input ended because the user pressed the menu key (rather
+	// than the local input closing), so the caller knows to open the menu. It is
+	// set just before the input-ended channel closes, which the reader of that
+	// channel synchronizes with, so a plain Load sees the right value.
+	menu atomic.Bool
 
 	mu   sync.Mutex
 	conn *proto.Conn // the session connection input is currently forwarded to
@@ -99,48 +110,62 @@ func (r *relay) curConn() *proto.Conn {
 // address. It starts one input reader for the whole relay lifetime, then attaches
 // to id, re-attaching to the target whenever a session asks it to switch, and
 // returns when the user detaches or a session exits.
-func runRelay(opt Options, in io.Reader, out io.Writer, inFd int, raw bool, addrOf func(string) string, id string) error {
-	if opt.DetachKey == 0 {
-		opt.DetachKey = DefaultDetachKey
+func runRelay(
+	opt Options, in io.Reader, out io.Writer, inFd int, raw bool,
+	addrOf func(string) string, id string,
+) (menu bool, err error) {
+	if opt.MenuKey == 0 {
+		opt.MenuKey = DefaultMenuKey
 	}
 
 	if raw && term.IsTerminal(inFd) {
-		old, err := term.MakeRaw(inFd)
-		if err != nil {
-			return err
+		old, merr := term.MakeRaw(inFd)
+		if merr != nil {
+			return false, merr
 		}
 
-		// On exit (detach or the session ending), undo any terminal modes the
-		// session's programs left set before handing the terminal back, so the
-		// outer shell — notably its scrollback — behaves normally again.
+		// Hand the terminal back as we found it — but only when we are truly done
+		// with this screen: returning to the launching shell, or stopping because the
+		// session ended. When we stop just so app.Run can open its inline menu
+		// (menu), skip the reset: the menu draws beneath the session's screen, like
+		// running `tm` inside it, so wiping it (a bare \e[?1049l drops the scrollback
+		// on some terminals) is exactly what we must not do. app.Run resets the
+		// terminal itself if it then switches sessions or detaches.
 		defer func() {
-			_, _ = out.Write(TerminalRestore)
+			if !menu {
+				_, _ = out.Write(TerminalRestore)
+			}
+
 			_ = term.Restore(inFd, old)
 		}()
 	}
 
-	r := &relay{detachKey: opt.DetachKey, ready: make(chan struct{})}
+	r := &relay{menuKey: opt.MenuKey, ready: make(chan struct{})}
 
-	detached := make(chan struct{})
+	ended := make(chan struct{})
 
 	var once sync.Once
 
-	onDetach := func() { once.Do(func() { close(detached) }) }
+	onEnd := func() { once.Do(func() { close(ended) }) }
 
-	// On any exit, signal detach so the input reader unblocks even if it is still
+	// On any exit, signal end so the input reader unblocks even if it is still
 	// waiting for the first connection (e.g. the initial dial failed).
-	defer onDetach()
+	defer onEnd()
 
-	go r.inputLoop(in, detached, onDetach)
+	go r.inputLoop(in, ended, onEnd)
 
 	for {
-		next, err := r.session(addrOf(id), opt, out, detached)
-		if err != nil {
-			return err
+		next, wantMenu, serr := r.session(addrOf(id), opt, out, ended)
+		if serr != nil {
+			return false, serr
+		}
+
+		if wantMenu {
+			return true, nil // the menu key: app.Run opens the menu, then re-attaches
 		}
 
 		if next == nil {
-			return nil // detached or the session exited
+			return false, nil // the session exited or local input ended
 		}
 
 		// Switching to another session. The session we are leaving may have left
@@ -159,12 +184,16 @@ func runRelay(opt Options, in io.Reader, out io.Writer, inFd int, raw bool, addr
 }
 
 // session runs one attachment: it dials addr, attaches, and proxies output until
-// the user detaches, the session exits, or the session asks the relay to switch.
-// It returns a non-nil SwitchTarget only for a switch; nil means stop the relay.
-func (r *relay) session(addr string, opt Options, out io.Writer, detached <-chan struct{}) (*proto.SwitchTarget, error) {
+// input ends (the menu key or the local input closing), the session exits, or the
+// session asks the relay to switch. It returns a non-nil SwitchTarget only for a
+// switch; otherwise the menu bool says whether input ended on the menu key (open
+// the menu) or for any other reason (stop the relay).
+func (r *relay) session(
+	addr string, opt Options, out io.Writer, ended <-chan struct{},
+) (*proto.SwitchTarget, bool, error) {
 	nc, err := proto.Dial(addr)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	defer func() { _ = nc.Close() }()
@@ -175,7 +204,7 @@ func (r *relay) session(addr string, opt Options, out io.Writer, detached <-chan
 
 	att := proto.Attach{Hist: opt.Hist, Lines: opt.Lines, Cols: uint16(cols), Rows: uint16(rows)}
 	if err := c.Write(proto.MsgAttach, att.Encode()); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	r.setConn(c)
@@ -187,15 +216,17 @@ func (r *relay) session(addr string, opt Options, out io.Writer, detached <-chan
 	go func() { target <- pumpOutput(c, out) }()
 
 	select {
-	case <-detached:
-		// The user pressed the detach key: tell the daemon to drop us (the session
-		// keeps running) and stop the relay.
+	case <-ended:
+		// Input ended: either the user pressed the menu key (r.menu set) or the
+		// local input closed. Either way tell the daemon to drop us — the session
+		// keeps running — and stop this attachment. The menu bool tells the caller
+		// whether to open the menu or leave tm.
 		_ = c.Write(proto.MsgDetach, nil)
 
-		return nil, nil
+		return nil, r.menu.Load(), nil
 	case t := <-target:
 		// nil: the session exited (stop). non-nil: switch to another session.
-		return t, nil
+		return t, false, nil
 	}
 }
 
@@ -226,15 +257,16 @@ func pumpOutput(c *proto.Conn, out io.Writer) *proto.SwitchTarget {
 
 // inputLoop reads local input for the relay's whole lifetime and forwards it to
 // the current session connection, which swaps as the relay switches sessions. On
-// the detach key it forwards any bytes before the key, signals detach, and stops;
-// it also stops (signalling detach) when input ends. Running it once — rather than
-// per session — keeps a single reader on the terminal so switching never leaves a
-// second reader stealing keystrokes. It waits for the first connection before
-// reading, so early keystrokes aren't dropped before the relay has attached.
-func (r *relay) inputLoop(in io.Reader, detached <-chan struct{}, onDetach func()) {
+// the menu key it forwards any bytes before the key, flags the menu, signals end,
+// and stops; it also stops (signalling end, without the flag) when input closes.
+// Running it once — rather than per session — keeps a single reader on the
+// terminal so switching never leaves a second reader stealing keystrokes. It waits
+// for the first connection before reading, so early keystrokes aren't dropped
+// before the relay has attached.
+func (r *relay) inputLoop(in io.Reader, ended <-chan struct{}, onEnd func()) {
 	select {
 	case <-r.ready:
-	case <-detached:
+	case <-ended:
 		return // relay ended before any session attached
 	}
 
@@ -244,14 +276,15 @@ func (r *relay) inputLoop(in io.Reader, detached <-chan struct{}, onDetach func(
 		n, err := in.Read(buf)
 		if n > 0 {
 			data := buf[:n]
-			if i := bytes.IndexByte(data, r.detachKey); i >= 0 {
+			if i := bytes.IndexByte(data, r.menuKey); i >= 0 {
 				if i > 0 {
 					if c := r.curConn(); c != nil {
 						_ = c.Write(proto.MsgInput, data[:i])
 					}
 				}
 
-				onDetach()
+				r.menu.Store(true) // the menu key ended input, not a closed pipe
+				onEnd()
 
 				return
 			}
@@ -262,7 +295,7 @@ func (r *relay) inputLoop(in io.Reader, detached <-chan struct{}, onDetach func(
 		}
 
 		if err != nil {
-			onDetach()
+			onEnd()
 
 			return
 		}

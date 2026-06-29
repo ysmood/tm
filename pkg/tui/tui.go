@@ -48,7 +48,9 @@ type Controller interface {
 type Action int
 
 const (
-	// ActionNone means leave tm — the user cancelled, quit, or detached.
+	// ActionNone means the user cancelled the menu (esc or Ctrl-C). At the top
+	// level app.Run leaves tm; when the menu was opened from within a session (via
+	// Ctrl-\) app.Run instead resumes that session.
 	ActionNone Action = iota
 	// ActionAttach means run the relay for Result.ID on this terminal (the menu
 	// was not launched from within a session).
@@ -57,6 +59,11 @@ const (
 	// was launched from within a session, so picking another moves this terminal
 	// there instead of nesting a new relay).
 	ActionSwitch
+	// ActionDetach means leave tm for the launching shell with every session still
+	// running. It is the explicit [detach session] command, kept distinct from
+	// ActionNone so a menu opened mid-session (via Ctrl-\) can tell "esc, resume"
+	// apart from "detach, drop me back at my shell".
+	ActionDetach
 )
 
 // Result is the menu's outcome: what to do and the chosen session's replay.
@@ -346,6 +353,20 @@ func (m Model) WithStatus(s string) Model {
 	return m
 }
 
+// WithCurrentSession frames the menu as running inside the given session even
+// when this tm was not launched from that session's shell. app.Run uses it when
+// Ctrl-\ reopens the menu from the relay: that process has no $TM_SESSION, so the
+// in-session framing — the header hint, hiding the current session from the list,
+// and esc meaning "back to it" — has to be set explicitly from the session the
+// relay is attached to.
+func (m Model) WithCurrentSession(id, name string) Model {
+	m.curSessionID = id
+	m.curSession = name
+	m.showMenu() // rebuild the list so the current session drops out of it
+
+	return m
+}
+
 // Key names compared against tea.KeyMsg.String().
 const (
 	keyEsc   = "esc"
@@ -422,7 +443,10 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	case cmdDetachSession:
 		// In tm's model the menu is the detached state: sessions are independent
 		// daemons that keep running. "Detach" therefore means leave tm entirely
-		// and return to the launching shell, with every session still alive.
+		// and return to the launching shell, with every session still alive. It is
+		// reported as ActionDetach (not a plain cancel) so a menu opened mid-session
+		// with Ctrl-\ leaves to the shell here, while esc resumes the session.
+		m.result = Result{Action: ActionDetach}
 		m.quit = true
 
 		return m, tea.Quit
@@ -605,7 +629,7 @@ func (m Model) footer() string {
 			keys = "↑/↓ move · type to filter · enter switch session · esc back to current session"
 		} else {
 			keys = "↑/↓ move · type to filter · enter select · " +
-				`esc quit (sessions keep running) · Ctrl-\ in a session detaches to your shell`
+				`esc quit (sessions keep running) · Ctrl-\ in a session opens this menu`
 		}
 	}
 

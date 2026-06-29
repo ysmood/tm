@@ -37,15 +37,19 @@ When you attach to a session, you will be prompted to choose how much log histor
 
 If you are already in a session, it will switch to the new session instead of nesting sessions.
 
+### Open the menu from inside a session
+
+While you are inside a session, press `Ctrl-\` to pop up the tm menu without
+leaving the session. From there you can switch to another session or start a new
+one, and pressing `esc` (or `Ctrl-\` again) drops you straight back into the
+session you came from, right where you left off.
+
 ### Detach from a session
 
-While you are inside a session, press `Ctrl-\` to detach: tm leaves and drops you
-back to the shell you launched it from, while the session keeps running in the
-background. Run `tm` again to pick it back up.
-
-From the menu, the `[detach session]` command does the same thing — leave tm with
-every session still running. You just type words like `detach`, `ds`, `[d`, `[ds`,
-etc. and hit enter.
+To leave tm and return to the shell you launched it from — with every session
+still running in the background — choose the `[detach session]` command from the
+menu. You just type words like `detach`, `ds`, `[d`, `[ds`, etc. and hit enter.
+Run `tm` again to pick a session back up.
 
 ### New namespace
 

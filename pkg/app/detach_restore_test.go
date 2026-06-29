@@ -65,8 +65,10 @@ func TestDetachRestoresTerminal(t *testing.T) {
 	send("echo MARK-$((6*7))\r")
 	g.Desc("session output: %q", buf.String()).True(waitForText(buf, "MARK-42", 15*time.Second))
 
-	_, err = pt.Write([]byte{0x1c}) // detach
-	g.E(err)
+	// Ctrl-\ opens the menu (resetting the terminal as it tears the relay down);
+	// [detach session] then leaves tm. The reset we assert on is emitted by that
+	// teardown, exactly as a direct detach used to emit it.
+	detachViaMenu(g, pt, buf)
 	g.E(c.Wait())
 
 	out := buf.String()

@@ -137,13 +137,9 @@ func (c *controller) Reap() int {
 	return len(before) - len(after)
 }
 
-// Run drives the interactive menu loop. Each pass prunes dead sessions, shows
-// the menu, and acts on what the user chose once it has fully torn down — so the
-// inline picker is erased from the screen before the relay's output (or the
-// target session's history on a switch) takes over, rather than the menu running
-// the relay itself. A failed attach reaps the unreachable session and reopens the
-// menu with a note; anything else (a clean detach, a switch, or a plain quit)
-// leaves tm for the launching shell.
+// Run is the entrypoint for tm with no arguments. Launched from a plain shell it
+// owns the terminal and runs the menu loop (runMenu); launched from inside a
+// session's shell it instead drives that session's existing relay (runInSession).
 func Run() error {
 	st, err := store.Open()
 	if err != nil {
@@ -152,58 +148,173 @@ func Run() error {
 
 	ctrl := &controller{st: st}
 
-	var status string
-
-	for {
-		_ = st.Prune(sessionLive)
-
-		m := tui.New(st, ctrl)
-		if status != "" {
-			m = m.WithStatus(status)
-		}
-
-		final, rerr := tea.NewProgram(m).Run()
-		if rerr != nil {
-			err = rerr
-
-			break
-		}
-
-		model, ok := final.(tui.Model)
-		if !ok {
-			break
-		}
-
-		res := model.Result()
-		if res.Action == tui.ActionAttach {
-			if aerr := attach.Run(st.Paths(), res.ID, attach.Options{Hist: res.Hist, Lines: res.Lines}); aerr != nil {
-				// The relay couldn't reach the daemon (a dead session). Reap it so it
-				// stops reappearing in the menu — otherwise reselecting it bounces back
-				// here forever — and reopen the menu with a note about what happened.
-				status = afterAttachError(ctrl, aerr)
-
-				continue
-			}
-		} else if res.Action == tui.ActionSwitch {
-			// Inside a session: hand its relay to the target. Non-fatal — if the
-			// current session's daemon can't be reached the user just stays put.
-			if serr := ctrl.Switch(res.ID, res.Hist, res.Lines); serr != nil {
-				fmt.Fprintln(os.Stderr, "tm: switch session:", serr)
-			}
-		}
-
-		break
+	// Inside a session this tm has no relay of its own: picking a session hands the
+	// outer relay over via the daemon, so there is no menu/relay loop to run here.
+	if os.Getenv(config.EnvSession) != "" {
+		return runInSession(ctrl)
 	}
 
-	// No terminal reset here on purpose. The menu renders inline (never the
-	// alternate screen), so Bubble Tea's own teardown leaves the terminal — and
-	// its scrollback — sane on a plain quit. The attach relay resets the terminal
-	// itself on detach (it is the only path that puts a session's full-screen
-	// modes on the outer terminal); a switch is handled by the relay we run
-	// inside. Writing TerminalRestore unconditionally here used to send a bare
-	// "leave alternate screen" (\e[?1049l) even when nothing had entered it, which
-	// drops the scrollback on terminals that pair rmcup with a buffer wipe.
-	return err
+	return runMenu(st, ctrl)
+}
+
+// runMenu owns the terminal for a tm launched from a plain shell, alternating
+// between the interactive menu and the relay. Picking a session attaches the
+// relay; pressing the menu key (Ctrl-\) inside the session returns here and
+// reopens the menu — framed as in-session — so esc resumes that session, picking
+// another switches to it, and [detach session] leaves tm for the launching shell.
+// A failed attach reaps the unreachable session and reopens the menu with a note.
+//
+// The menu always acts only once it has fully torn down (the inline picker is
+// erased before the relay's output or a history replay takes over), so the menu
+// never runs the relay itself.
+//
+// It does no terminal reset on the way out: the menu renders inline (never the
+// alternate screen), so Bubble Tea's teardown leaves the terminal — and its
+// scrollback — sane, and the relay resets the terminal itself whenever it hands
+// it back.
+func runMenu(st *store.Store, ctrl *controller) error {
+	var (
+		status  string
+		curID   string // session the relay is (or just was) on; "" at the top level
+		curName string
+	)
+
+	for {
+		res, err := showMenu(st, ctrl, status, curID, curName)
+		if err != nil {
+			return err
+		}
+
+		status = ""
+
+		var (
+			targetID string
+			hist     proto.HistMode
+			lines    uint32
+		)
+
+		switch res.Action {
+		case tui.ActionAttach, tui.ActionSwitch:
+			// A picked session. In the relay-menu both resolve to a target to
+			// (re)attach on this terminal — the daemon round-trip switch is only for
+			// an inner tm (runInSession), never here.
+			targetID, hist, lines = res.ID, res.Hist, res.Lines
+		case tui.ActionNone:
+			// esc / Ctrl-C. At the top level it leaves tm; reopened from a session it
+			// resumes that session. The inline menu erased itself on the way out and
+			// the relay never reset the screen, so the session's output is still there
+			// untouched — replay nothing (HistNone), or we would reprint a screen of
+			// history on top of what is already shown. The user just drops back in.
+			if curID == "" {
+				return nil
+			}
+
+			targetID, hist = curID, proto.HistNone
+		case tui.ActionDetach:
+			// [detach session]: leave tm, every session still running. When we came
+			// from a session (the menu was drawn inline over its screen and the relay
+			// left the terminal untouched), reset it so the launching shell gets it
+			// clean; at the top level there is nothing to undo.
+			if curID != "" {
+				_, _ = os.Stdout.Write(attach.TerminalRestore)
+			}
+
+			return nil
+		}
+
+		// Switching to a different session: the relay left this session's screen up
+		// so the menu could open inline over it, so reset the terminal (leave the
+		// alternate screen, mouse modes, scroll region, …) before the target's
+		// history replays. Resuming the same session keeps the screen as-is (that is
+		// the point of the inline menu), and the first attach from a clean shell has
+		// nothing to undo.
+		if curID != "" && targetID != curID {
+			_, _ = os.Stdout.Write(attach.TerminalRestore)
+		}
+
+		menu, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines})
+		if aerr != nil {
+			// The relay couldn't reach the daemon (a dead session). Reap it so it
+			// stops reappearing in the menu — otherwise reselecting it bounces back
+			// here forever — and reopen the top-level menu with a note.
+			status = afterAttachError(ctrl, aerr)
+			curID, curName = "", ""
+
+			continue
+		}
+
+		if menu {
+			// Ctrl-\: reopen the menu framed as in-session, so esc resumes and a pick
+			// switches.
+			curID, curName = targetID, sessionName(st, targetID)
+
+			continue
+		}
+
+		return nil // the session's shell exited: leave tm for the launching shell
+	}
+}
+
+// runInSession handles tm launched from inside a session's shell. The menu here
+// drives the outer relay: picking another session asks the current session's
+// daemon to hand that relay over (a switch), while esc or [detach session] just
+// leaves this inner tm, dropping back into the session. There is no relay to run
+// in this process, so unlike runMenu it never attaches.
+func runInSession(ctrl *controller) error {
+	res, err := showMenu(ctrl.st, ctrl, "", "", "")
+	if err != nil {
+		return err
+	}
+
+	if res.Action == tui.ActionSwitch {
+		// Hand the relay to the target. Non-fatal — if the current session's daemon
+		// can't be reached the user just stays put.
+		if serr := ctrl.Switch(res.ID, res.Hist, res.Lines); serr != nil {
+			fmt.Fprintln(os.Stderr, "tm: switch session:", serr)
+		}
+	}
+
+	return nil
+}
+
+// showMenu prunes dead sessions, runs the interactive menu once, and returns what
+// the user chose. A non-empty curID frames the menu as running inside that session
+// even though this process has no $TM_SESSION — runMenu uses it to reopen the menu
+// as in-session after Ctrl-\.
+func showMenu(st *store.Store, ctrl *controller, status, curID, curName string) (tui.Result, error) {
+	_ = st.Prune(sessionLive)
+
+	m := tui.New(st, ctrl)
+	if curID != "" {
+		m = m.WithCurrentSession(curID, curName)
+	}
+
+	if status != "" {
+		m = m.WithStatus(status)
+	}
+
+	final, err := tea.NewProgram(m).Run()
+	if err != nil {
+		return tui.Result{}, err
+	}
+
+	model, ok := final.(tui.Model)
+	if !ok {
+		return tui.Result{}, nil
+	}
+
+	return model.Result(), nil
+}
+
+// sessionName resolves a session id to its name for the in-session header, or ""
+// if the session is gone.
+func sessionName(st *store.Store, id string) string {
+	s, err := st.GetSession(id)
+	if err != nil {
+		return ""
+	}
+
+	return s.Name
 }
 
 // afterAttachError reaps the session whose relay just failed to connect and
@@ -226,14 +337,18 @@ func reapNoun(n int) string {
 	return strconv.Itoa(n) + " unreachable sessions"
 }
 
-// RunAttach is the entrypoint for the hidden `tm __attach` subcommand.
+// RunAttach is the entrypoint for the hidden `tm __attach` subcommand. It runs a
+// bare relay with no menu loop, so the menu key just ends it (like the old
+// detach); the full menu-on-Ctrl-\ flow lives in Run/runMenu.
 func RunAttach(id string, hist proto.HistMode, lines uint32) error {
 	p, err := config.New()
 	if err != nil {
 		return err
 	}
 
-	return attach.Run(p, id, attach.Options{Hist: hist, Lines: lines})
+	_, err = attach.Run(p, id, attach.Options{Hist: hist, Lines: lines})
+
+	return err
 }
 
 func newID() (string, error) {

@@ -105,7 +105,6 @@ func TestFirstLaunchAttachErasesPicker(t *testing.T) {
 	g.Desc("the picker must be erased — no header left behind: %q", screen).
 		False(strings.Contains(screen, "namespace: default"))
 
-	_, err = pt.Write([]byte{0x1c})
-	g.E(err)
+	detachViaMenu(g, pt, buf) // Ctrl-\ menu -> [detach session] -> leave tm
 	_ = c.Wait()
 }

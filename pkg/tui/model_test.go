@@ -161,7 +161,9 @@ func TestModelNotInSessionAttaches(t *testing.T) {
 	g.Eq(res.Hist, proto.HistAll)
 }
 
-// Selecting [detach session] quits tm (sessions keep running in the background).
+// Selecting [detach session] quits tm via ActionDetach (sessions keep running in
+// the background). The dedicated action lets a menu opened mid-session with Ctrl-\
+// tell "detach to my shell" apart from a plain esc, which resumes the session.
 func TestModelDetachSessionQuits(t *testing.T) {
 	g := got.T(t)
 	m := New(newStore(g, t), fakeCtrl{})
@@ -169,7 +171,9 @@ func TestModelDetachSessionQuits(t *testing.T) {
 	m = typeStr(m, "ds")
 	next, cmd := m.Update(keyEnterMsg)
 
-	g.True(next.(Model).quit)
+	final := next.(Model)
+	g.True(final.quit)
+	g.Eq(final.Result().Action, ActionDetach)
 	g.NotNil(cmd)
 	_, ok := cmd().(tea.QuitMsg)
 	g.True(ok)
