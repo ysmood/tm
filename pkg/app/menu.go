@@ -4,8 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"time"
 
@@ -16,22 +16,12 @@ import (
 	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
 	"github.com/ysmood/tm/pkg/tui"
-	"golang.org/x/term"
 )
 
 // controller implements tui.Controller using the store and process spawning.
+// Attaching, switching and reaping are driven by Run (not the menu), so they are
+// plain methods here rather than part of tui.Controller.
 type controller struct{ st *store.Store }
-
-// AttachCmd builds the `tm __attach` relay command for a session.
-func (c *controller) AttachCmd(id string, hist proto.HistMode, lines uint32) *exec.Cmd {
-	self, _ := os.Executable()
-
-	return exec.Command(self, "__attach",
-		"--id", id,
-		"--hist", strconv.Itoa(int(hist)),
-		"--lines", strconv.Itoa(int(lines)),
-	)
-}
 
 // CurrentSession returns the id and name of the session this tm is running
 // inside, or "", "" if tm was not launched from within a session's shell. It
@@ -147,28 +137,93 @@ func (c *controller) Reap() int {
 	return len(before) - len(after)
 }
 
-// Run launches the interactive menu. It prunes dead sessions on entry.
+// Run drives the interactive menu loop. Each pass prunes dead sessions, shows
+// the menu, and acts on what the user chose once it has fully torn down — so the
+// inline picker is erased from the screen before the relay's output (or the
+// target session's history on a switch) takes over, rather than the menu running
+// the relay itself. A failed attach reaps the unreachable session and reopens the
+// menu with a note; anything else (a clean detach, a switch, or a plain quit)
+// leaves tm for the launching shell.
 func Run() error {
 	st, err := store.Open()
 	if err != nil {
 		return err
 	}
 
-	_ = st.Prune(sessionLive)
+	ctrl := &controller{st: st}
 
-	prog := tea.NewProgram(tui.New(st, &controller{st: st}))
-	_, err = prog.Run()
+	var status string
 
-	// The menu runs the relay via tea.ExecProcess, which re-enters the alternate
-	// screen when the relay returns and then tears the menu down — a path that does
-	// not reliably restore terminal state, so the relay's own reset on detach can be
-	// clobbered. Have the last word here, once Bubble Tea is fully done, so the
-	// terminal (and its scrollback) is left sane on the way back to the shell.
-	if term.IsTerminal(int(os.Stdout.Fd())) {
-		_, _ = os.Stdout.Write(attach.TerminalRestore)
+	for {
+		_ = st.Prune(sessionLive)
+
+		m := tui.New(st, ctrl)
+		if status != "" {
+			m = m.WithStatus(status)
+		}
+
+		final, rerr := tea.NewProgram(m).Run()
+		if rerr != nil {
+			err = rerr
+
+			break
+		}
+
+		model, ok := final.(tui.Model)
+		if !ok {
+			break
+		}
+
+		res := model.Result()
+		if res.Action == tui.ActionAttach {
+			if aerr := attach.Run(st.Paths(), res.ID, attach.Options{Hist: res.Hist, Lines: res.Lines}); aerr != nil {
+				// The relay couldn't reach the daemon (a dead session). Reap it so it
+				// stops reappearing in the menu — otherwise reselecting it bounces back
+				// here forever — and reopen the menu with a note about what happened.
+				status = afterAttachError(ctrl, aerr)
+
+				continue
+			}
+		} else if res.Action == tui.ActionSwitch {
+			// Inside a session: hand its relay to the target. Non-fatal — if the
+			// current session's daemon can't be reached the user just stays put.
+			if serr := ctrl.Switch(res.ID, res.Hist, res.Lines); serr != nil {
+				fmt.Fprintln(os.Stderr, "tm: switch session:", serr)
+			}
+		}
+
+		break
 	}
 
+	// No terminal reset here on purpose. The menu renders inline (never the
+	// alternate screen), so Bubble Tea's own teardown leaves the terminal — and
+	// its scrollback — sane on a plain quit. The attach relay resets the terminal
+	// itself on detach (it is the only path that puts a session's full-screen
+	// modes on the outer terminal); a switch is handled by the relay we run
+	// inside. Writing TerminalRestore unconditionally here used to send a bare
+	// "leave alternate screen" (\e[?1049l) even when nothing had entered it, which
+	// drops the scrollback on terminals that pair rmcup with a buffer wipe.
 	return err
+}
+
+// afterAttachError reaps the session whose relay just failed to connect and
+// returns the status to show on the reopened menu.
+func afterAttachError(ctrl *controller, relayErr error) string {
+	if n := ctrl.Reap(); n > 0 {
+		return "removed " + reapNoun(n)
+	}
+
+	return "session ended: " + relayErr.Error()
+}
+
+// reapNoun renders a count of removed-because-unreachable sessions for the status
+// line, e.g. "1 unreachable session" or "3 unreachable sessions".
+func reapNoun(n int) string {
+	if n == 1 {
+		return "1 unreachable session"
+	}
+
+	return strconv.Itoa(n) + " unreachable sessions"
 }
 
 // RunAttach is the entrypoint for the hidden `tm __attach` subcommand.

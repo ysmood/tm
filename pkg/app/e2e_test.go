@@ -183,8 +183,8 @@ func killLeftoverDaemons(g got.G) {
 }
 
 // TestRelayUnderPTY runs the relay directly under a PTY (no menu) to confirm the
-// relay forwards input and output correctly, isolating it from the Bubble Tea
-// ExecProcess integration.
+// relay forwards input and output correctly, isolating it from the menu that
+// normally drives it.
 func TestRelayUnderPTY(t *testing.T) {
 	g := got.T(t)
 	g.PanicAfter(90 * time.Second)

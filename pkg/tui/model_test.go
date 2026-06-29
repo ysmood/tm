@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"errors"
-	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -17,30 +15,20 @@ import (
 // fakeCtrl is a no-op Controller for driving the model in tests.
 type fakeCtrl struct{}
 
-func (fakeCtrl) AttachCmd(string, proto.HistMode, uint32) *exec.Cmd { return exec.Command("true") }
-func (fakeCtrl) CreateAndSpawn(string, string) (string, error)      { return "id", nil }
-func (fakeCtrl) CurrentSession() (string, string)                   { return "", "" }
-func (fakeCtrl) Switch(string, proto.HistMode, uint32) error        { return nil }
-func (fakeCtrl) DefaultSessionName(string) string                   { return "default-name" }
-func (fakeCtrl) Reap() int                                          { return 0 }
+func (fakeCtrl) CreateAndSpawn(string, string) (string, error) { return "id", nil }
+func (fakeCtrl) CurrentSession() (string, string)              { return "", "" }
+func (fakeCtrl) DefaultSessionName(string) string              { return "default-name" }
 
 // sessCtrl reports a current-session id and name, simulating a tm launched from
-// within a session's shell, and records the id of any switch it is asked to
-// perform.
+// within a session's shell.
 type sessCtrl struct {
 	fakeCtrl
-	id         string
-	name       string
-	switchedTo *string
+
+	id   string
+	name string
 }
 
 func (c sessCtrl) CurrentSession() (string, string) { return c.id, c.name }
-
-func (c sessCtrl) Switch(id string, _ proto.HistMode, _ uint32) error {
-	*c.switchedTo = id
-
-	return nil
-}
 
 func newStore(g got.G, t *testing.T) *store.Store {
 	p := config.Paths{Home: t.TempDir(), Runtime: t.TempDir()}
@@ -72,26 +60,6 @@ func has(list []string, v string) bool {
 	return slices.Contains(list, v)
 }
 
-// reapCtrl is a Controller whose Reap prunes a backing store, so tests can
-// observe the menu dropping a dead session after a failed attach.
-type reapCtrl struct {
-	fakeCtrl
-	st     *store.Store
-	called bool
-}
-
-func (c *reapCtrl) Reap() int {
-	c.called = true
-
-	before, _ := c.st.ListSessions()
-	// All sessions in this fake are treated as dead (PID 0 stays, real PIDs go);
-	// the test seeds a dead one to be removed.
-	_ = c.st.Prune(func(s store.Session) bool { return false })
-	after, _ := c.st.ListSessions()
-
-	return len(before) - len(after)
-}
-
 // sessionRows counts the session (non-command) rows currently in the menu.
 func sessionRows(m Model) int {
 	n := 0
@@ -103,41 +71,6 @@ func sessionRows(m Model) int {
 	}
 
 	return n
-}
-
-// A failed attach (the relay couldn't reach the daemon) reaps the dead session
-// so it drops out of the menu instead of luring the user into an endless
-// select-bounce loop.
-func TestModelReapsDeadSessionOnAttachError(t *testing.T) {
-	g := got.T(t)
-	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "dead", Name: "dead", Namespace: store.DefaultNamespace}))
-
-	ctrl := &reapCtrl{st: st}
-	m := New(st, ctrl)
-	g.Eq(sessionRows(m), 1) // the session shows up at first
-
-	// Simulate the relay exiting with an error (e.g. "connection refused").
-	m = send(m, relayDoneMsg{err: errors.New("connection refused")})
-
-	g.True(ctrl.called)
-	g.Eq(sessionRows(m), 0) // the dead session is gone, so it can't be reselected
-	g.Has(m.status, "unreachable")
-}
-
-// A clean return from a session — the user detached (Ctrl-\) or the session's
-// shell exited — quits tm back to the launching shell rather than re-showing
-// the menu.
-func TestModelCleanRelayReturnQuits(t *testing.T) {
-	g := got.T(t)
-	m := New(newStore(g, t), fakeCtrl{})
-
-	next, cmd := m.Update(relayDoneMsg{})
-
-	g.True(next.(Model).quit)
-	g.NotNil(cmd)
-	_, ok := cmd().(tea.QuitMsg)
-	g.True(ok)
 }
 
 // Launched from within a session, the menu header shows that session's name so
@@ -176,33 +109,56 @@ func TestModelHidesCurrentSessionFromList(t *testing.T) {
 	g.True(!has(labels, "current"))
 }
 
-// Inside a session, picking another session hands the current relay over (a
-// switch) instead of nesting a new one, then quits this menu.
+// Inside a session, picking another session resolves to a switch (hand the
+// current relay over) rather than an attach, and quits the menu. app.Run performs
+// the handover after the menu tears down, so the menu records it but doesn't act.
 func TestModelInSessionSwitchesInsteadOfNesting(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
 	g.E(st.SaveSession(store.Session{ID: "target", Name: "target", Namespace: store.DefaultNamespace}))
 
-	var switched string
-	m := New(st, sessCtrl{name: "current", switchedTo: &switched})
+	m := New(st, sessCtrl{name: "current"})
 
 	m = send(m, keyEnterMsg) // the cursor starts on the session -> scrollback chooser
 	g.Eq(m.pickFor, pickScrollback)
 
-	_, cmd := m.Update(keyEnterMsg) // choose "All history" -> switch cmd
+	next, cmd := m.Update(keyEnterMsg) // choose "All history"
 	g.NotNil(cmd)
 
-	msg, ok := cmd().(switchDoneMsg) // running it performs the switch
-	g.True(ok)
-	g.E(msg.err)
-	g.Eq(switched, "target")
+	final := next.(Model)
+	g.True(final.quit)
 
-	// Delivering the result quits tm so the handed-over relay shows the target.
-	final, qcmd := m.Update(msg)
-	g.True(final.(Model).quit)
-	g.NotNil(qcmd)
-	_, isQuit := qcmd().(tea.QuitMsg)
+	_, isQuit := cmd().(tea.QuitMsg)
 	g.True(isQuit)
+
+	res := final.Result()
+	g.Eq(res.Action, ActionSwitch)
+	g.Eq(res.ID, "target")
+	g.Eq(res.Hist, proto.HistAll)
+}
+
+// Not inside a session, picking one resolves to an attach (run the relay on this
+// terminal), and quits the menu for app.Run to carry out.
+func TestModelNotInSessionAttaches(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "sid", Name: "solo", Namespace: store.DefaultNamespace}))
+
+	m := New(st, fakeCtrl{})
+
+	m = send(m, keyEnterMsg) // the cursor starts on the session -> scrollback chooser
+	g.Eq(m.pickFor, pickScrollback)
+
+	next, cmd := m.Update(keyEnterMsg) // choose "All history"
+	g.NotNil(cmd)
+
+	final := next.(Model)
+	g.True(final.quit)
+
+	res := final.Result()
+	g.Eq(res.Action, ActionAttach)
+	g.Eq(res.ID, "sid")
+	g.Eq(res.Hist, proto.HistAll)
 }
 
 // Selecting [detach session] quits tm (sessions keep running in the background).

@@ -80,6 +80,7 @@ type picker struct {
 	list  list.Model
 	input textarea.Model
 	all   []pickerItem
+	width int
 }
 
 func newPicker() picker {
@@ -95,7 +96,7 @@ func newPicker() picker {
 	in := newInput("> ")
 	_ = in.Focus()
 
-	return picker{list: l, input: in}
+	return picker{list: l, input: in, width: 80}
 }
 
 // setItems replaces the full item set and clears the query.
@@ -105,9 +106,21 @@ func (p *picker) setItems(items []pickerItem) {
 	p.refilter()
 }
 
-func (p *picker) setSize(w, h int) {
-	p.list.SetSize(w, h)
+// setWidth sets the picker's width and re-applies its size. The height is not a
+// parameter: the menu renders inline (not in the alternate screen), so the list
+// is kept just tall enough for its rows — see applySize — instead of filling the
+// terminal, which would scroll the user's existing screen out of view.
+func (p *picker) setWidth(w int) {
+	p.width = w
 	p.input.SetWidth(w)
+	p.applySize()
+}
+
+// applySize sizes the list to the visible row count, capped at maxRows, so the
+// inline picker stays compact and the screen above it is preserved. A minimum of
+// one row keeps the "No matches." empty state visible.
+func (p *picker) applySize() {
+	p.list.SetSize(p.width, max(1, min(len(p.list.Items()), maxRows)))
 }
 
 // refilter recomputes the visible rows from the current query.
@@ -121,6 +134,7 @@ func (p *picker) refilter() {
 
 	p.list.SetItems(items)
 	p.list.Select(0)
+	p.applySize()
 }
 
 // update handles one key press and reports whether it selected or canceled.

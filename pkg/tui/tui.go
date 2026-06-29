@@ -1,8 +1,8 @@
 // Package tui implements the interactive Bubble Tea menu: a fuzzy-filterable
-// list of commands and sessions. Selecting a session (or creating one) hands
-// the terminal to the relay via tea.ExecProcess. A clean return — the user
-// detached or the session's shell exited — quits tm back to the launching
-// shell; only a failed attach drops back into the menu (reaping dead sessions).
+// list of commands and sessions. Selecting a session (or creating one) records
+// what to do (see Result) and quits; app.Run carries it out — attaching the
+// relay or, inside a session, switching it — once the menu has torn down, so the
+// inline picker is erased from the screen first. The menu itself runs no relay.
 //
 // Every menu — the main list, the scrollback chooser, the namespace chooser —
 // is the same type-to-filter picker (see picker.go), so they share keys and
@@ -12,7 +12,6 @@
 package tui
 
 import (
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,26 +25,46 @@ import (
 
 // Controller performs the side effects the menu needs but can't do itself
 // (spawning processes). It is implemented by package app.
+//
+// The menu does not run the relay or perform the switch itself: it records what
+// the user chose (see Result) and quits, and app.Run carries it out once the menu
+// has torn down. So attaching, switching and reaping live in app.Run, not here.
 type Controller interface {
-	// AttachCmd builds the relay command for attaching to a session.
-	AttachCmd(id string, hist proto.HistMode, lines uint32) *exec.Cmd
 	// CreateAndSpawn creates a session in ns and starts its daemon, returning its id.
 	CreateAndSpawn(ns, name string) (string, error)
 	// CurrentSession returns the id and name of the session this tm is running
 	// inside (when launched from a session's shell), or "", "" if not in a session.
 	// The id lets the menu hide the current session from the attach list (you are
-	// already in it); the name is shown in the header as a nesting hint.
+	// already in it); the name is shown in the header as a nesting hint, and its
+	// presence decides whether a pick attaches or switches (see Result).
 	CurrentSession() (id, name string)
-	// Switch hands the current session's relay to another session, used in place
-	// of AttachCmd when this tm is running inside a session so picking a session
-	// moves the terminal there instead of nesting a new relay.
-	Switch(id string, hist proto.HistMode, lines uint32) error
 	// DefaultSessionName proposes a unique default name for a new session in ns.
 	DefaultSessionName(ns string) string
-	// Reap drops sessions whose daemon is no longer running and reports how many
-	// it removed. The menu calls it after a failed attach so a dead session stops
-	// reappearing in the list (otherwise selecting it again bounces back here forever).
-	Reap() int
+}
+
+// Action is what the user resolved the menu to when it exited; app.Run carries
+// it out after the menu has torn down (so the picker is erased from the screen
+// first).
+type Action int
+
+const (
+	// ActionNone means leave tm — the user cancelled, quit, or detached.
+	ActionNone Action = iota
+	// ActionAttach means run the relay for Result.ID on this terminal (the menu
+	// was not launched from within a session).
+	ActionAttach
+	// ActionSwitch means hand the current session's relay to Result.ID (the menu
+	// was launched from within a session, so picking another moves this terminal
+	// there instead of nesting a new relay).
+	ActionSwitch
+)
+
+// Result is the menu's outcome: what to do and the chosen session's replay.
+type Result struct {
+	Action Action
+	ID     string
+	Hist   proto.HistMode
+	Lines  uint32
 }
 
 type cmdID int
@@ -137,9 +156,12 @@ type Model struct {
 
 	pendingID string // session awaiting a scrollback choice
 
-	status        string
-	quit          bool
-	width, height int
+	// result is what the menu resolved to; app.Run reads it via Result after the
+	// program exits and carries it out (attach, switch, or nothing).
+	result Result
+
+	status string
+	quit   bool
 }
 
 // New builds the menu model over a store and controller.
@@ -254,14 +276,6 @@ func (m *Model) showNamespaces(p pickPurpose) {
 	m.pick.setItems(items)
 }
 
-// relayDoneMsg is delivered when the relay subprocess returns.
-type relayDoneMsg struct{ err error }
-
-// switchDoneMsg is delivered when an in-session switch request has been sent (or
-// failed). On success this tm quits, leaving the handed-over relay showing the
-// target session.
-type switchDoneMsg struct{ err error }
-
 // spawnedMsg is delivered when a new session's daemon has started.
 type spawnedMsg struct {
 	id  string
@@ -272,47 +286,10 @@ type spawnedMsg struct {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		m.pick.setSize(msg.Width, m.listHeight())
+		m.pick.setWidth(msg.Width)
 		m.input.SetWidth(msg.Width)
 
 		return m, nil
-	case relayDoneMsg:
-		if msg.err != nil {
-			// A relay error means the daemon was unreachable. Reap any sessions
-			// whose daemon has died so the dead one drops out of the menu instead
-			// of luring the user into selecting it and bouncing back here again.
-			if n := m.ctrl.Reap(); n > 0 {
-				m.status = "removed " + reapNoun(n)
-			} else {
-				m.status = "session ended: " + msg.err.Error()
-			}
-
-			m.showMenu()
-
-			return m, nil
-		}
-
-		// A clean return from a session — the user detached (Ctrl-\) or the
-		// session's shell exited — means we're done driving a session: leave tm
-		// and drop back to the launching shell, with every session still running.
-		// Run tm again to pick up another one.
-		m.quit = true
-
-		return m, tea.Quit
-	case switchDoneMsg:
-		if msg.err != nil {
-			m.status = "switch failed: " + msg.err.Error()
-			m.showMenu()
-
-			return m, nil
-		}
-
-		// The relay we are running inside has been handed to the target session;
-		// quit so this menu gets out of the way and the relay shows the target.
-		m.quit = true
-
-		return m, tea.Quit
 	case spawnedMsg:
 		if msg.err != nil {
 			m.status = "failed to start session: " + msg.err.Error()
@@ -321,7 +298,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		return m, m.attach(msg.id, proto.HistNone, 0)
+		return m.attach(msg.id, proto.HistNone, 0)
 	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" {
 			m.quit = true
@@ -340,26 +317,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// reapNoun renders a count of removed-because-unreachable sessions for the
-// status line, e.g. "1 unreachable session" or "3 unreachable sessions".
-func reapNoun(n int) string {
-	if n == 1 {
-		return "1 unreachable session"
+// attach resolves a chosen session into the menu's Result and quits. It never
+// runs the relay or switches here: app.Run does that once the menu has fully torn
+// down, so the inline picker is erased before the target session's output lands
+// (like fzf clearing its prompt on exit). Inside a session the pick switches that
+// session's relay; otherwise it attaches a relay on this terminal.
+func (m Model) attach(id string, hist proto.HistMode, lines uint32) (Model, tea.Cmd) {
+	action := ActionAttach
+	if m.curSession != "" {
+		action = ActionSwitch
 	}
 
-	return strconv.Itoa(n) + " unreachable sessions"
+	m.result = Result{Action: action, ID: id, Hist: hist, Lines: lines}
+	m.quit = true
+
+	return m, tea.Quit
 }
 
-func (m Model) attach(id string, hist proto.HistMode, lines uint32) tea.Cmd {
-	// When running inside a session, hand that session's relay to the target
-	// instead of nesting a new relay under the current one.
-	if m.curSession != "" {
-		return func() tea.Msg { return switchDoneMsg{m.ctrl.Switch(id, hist, lines)} }
-	}
+// Result reports what the user resolved the menu to. It is meaningful once the
+// program has exited; app.Run reads it to attach, switch, or just leave tm.
+func (m Model) Result() Result { return m.result }
 
-	cmd := m.ctrl.AttachCmd(id, hist, lines)
+// WithStatus returns the model with a status line set, used to carry a note
+// (e.g. a reaped dead session) into a freshly opened menu.
+func (m Model) WithStatus(s string) Model {
+	m.status = s
 
-	return tea.ExecProcess(cmd, func(err error) tea.Msg { return relayDoneMsg{err} })
+	return m
 }
 
 // Key names compared against tea.KeyMsg.String().
@@ -463,7 +447,7 @@ func (m Model) selectScrollback(p scrollbackPayload) (tea.Model, tea.Cmd) {
 	id := m.pendingID
 	m.showMenu()
 
-	return m, m.attach(id, p.hist, p.lines)
+	return m.attach(id, p.hist, p.lines)
 }
 
 func (m Model) dropNamespace(ns string) (tea.Model, tea.Cmd) {
@@ -564,14 +548,16 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 		id := m.pendingID
 		m.showMenu()
 
-		return m, m.attach(id, proto.HistLines, uint32(n))
+		return m.attach(id, proto.HistLines, uint32(n))
 	}
 
 	return m, nil
 }
 
-// View satisfies tea.Model. The menu runs in the alternate screen so the
-// relayed shell (run via tea.ExecProcess) owns the main screen's scrollback.
+// View satisfies tea.Model. The menu renders inline (not in the alternate
+// screen) so opening it does not blank the current session's screen: the picker
+// appears beneath the existing output, and on a switch the target session's
+// history replays right after it instead of onto a cleared screen.
 func (m Model) View() tea.View {
 	if m.quit {
 		return tea.View{}
@@ -582,22 +568,12 @@ func (m Model) View() tea.View {
 		content = m.viewInput()
 	}
 
-	return tea.View{Content: content, AltScreen: true}
+	return tea.View{Content: content, AltScreen: false}
 }
 
-// maxRows is the picker height used until the first WindowSizeMsg (and the
-// minimum thereafter).
+// maxRows caps the inline picker's list height so a long session list stays
+// compact (paginating) rather than pushing the screen above it out of view.
 const maxRows = 15
-
-// listHeight is the height handed to the picker's list, leaving room for the
-// title, query line and footer.
-func (m Model) listHeight() int {
-	if h := m.height - 7; h >= 3 {
-		return h
-	}
-
-	return maxRows
-}
 
 func (m Model) viewPick() string {
 	th := styles()

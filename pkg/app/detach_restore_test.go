@@ -16,10 +16,10 @@ import (
 // TestDetachRestoresTerminal proves that detaching from a session in which a
 // full-screen program left the terminal in a non-default state (alternate screen
 // buffer, mouse reporting, a scroll region) restores the outer terminal, so the
-// user gets their scrollback back. Without the restore the menu's tea.ExecProcess
-// teardown leaves the terminal stuck in the alternate screen buffer (the wheel
-// then finds no history) — this drives the real menu and asserts the captured
-// stream ends with the terminal back on the main screen and those modes off.
+// user gets their scrollback back. Without the restore the terminal is left stuck
+// in the alternate screen buffer (the wheel then finds no history) — this drives
+// the real menu and asserts the captured stream ends with the terminal back on
+// the main screen and those modes off.
 func TestDetachRestoresTerminal(t *testing.T) {
 	g := got.T(t)
 	g.PanicAfter(120 * time.Second)
