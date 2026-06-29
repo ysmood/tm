@@ -134,10 +134,11 @@ func TestInlineMenuClearsLikeFzf(t *testing.T) {
 // vt is a minimal terminal model: enough to track the main-screen scrollback and
 // visible grid so a test can assert what the user can actually see.
 type vt struct {
-	rows, cols int
-	cur        [][]rune
-	scroll     []string
-	cr, cc     int
+	rows, cols     int
+	cur            [][]rune
+	scroll         []string
+	cr, cc         int
+	savedR, savedC int // DECSC/DECRC saved cursor (ESC 7 / ESC 8)
 }
 
 func newVT(rows, cols int) *vt {
@@ -194,6 +195,12 @@ func (v *vt) put(ch rune) {
 func (v *vt) feed(p []byte) {
 	for i := 0; i < len(p); {
 		switch b := p[i]; {
+		case b == 0x1b && i+1 < len(p) && p[i+1] == '7': // DECSC: save cursor
+			v.savedR, v.savedC = v.cr, v.cc
+			i += 2
+		case b == 0x1b && i+1 < len(p) && p[i+1] == '8': // DECRC: restore cursor
+			v.cr, v.cc = v.savedR, v.savedC
+			i += 2
 		case b == 0x1b:
 			i += v.esc(p[i:])
 		case b == '\n':

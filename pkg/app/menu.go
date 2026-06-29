@@ -180,10 +180,15 @@ func runMenu(st *store.Store, ctrl *controller) error {
 	)
 
 	for {
+		// Keep the inline picker from swallowing the shell's prompt (see promptGuard).
+		guard := openMenuOverSession(curID)
+
 		res, err := showMenu(st, ctrl, status, curID, curName)
 		if err != nil {
 			return err
 		}
+
+		guard.restorePrompt()
 
 		status = ""
 
@@ -252,6 +257,43 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		}
 
 		return nil // the session's shell exited: leave tm for the launching shell
+	}
+}
+
+// promptGuard keeps the inline menu from swallowing the shell's prompt when it
+// opens over a live session (Ctrl-\). Bubble Tea's inline picker takes over the
+// line the cursor is on — the prompt line — and erases that whole block when it
+// tears down, so without this the prompt vanishes on esc. The zero value is an
+// inactive guard (used at the top level), whose methods are no-ops so the menu
+// opens exactly as before.
+type promptGuard struct {
+	active bool
+}
+
+// openMenuOverSession arms a guard for a menu about to be drawn over the live
+// session curID: it saves the cursor (DECSC) and pushes the picker onto a fresh
+// line below the prompt, so the picker erases only its own lines. The inline
+// picker never enters the alternate screen, so Bubble Tea leaves the saved cursor
+// alone (it only saves/restores the cursor when toggling the alt screen). Inactive
+// at the top level (curID == ""), where there is no prompt to protect.
+func openMenuOverSession(curID string) promptGuard {
+	if curID == "" {
+		return promptGuard{}
+	}
+
+	_, _ = os.Stdout.Write([]byte("\x1b7\n")) // DECSC, then a spacer line for the picker
+
+	return promptGuard{active: true}
+}
+
+// restorePrompt returns the cursor to where the prompt left it (DECRC) once the
+// picker has torn down. The picker drew (and erased) below the saved position, so
+// the prompt itself is intact and resuming the session leaves the screen exactly
+// as it was, the way fzf does on esc. A switch or detach reuses the same restore;
+// the target's replay (or the launching shell) then takes the screen from there.
+func (g promptGuard) restorePrompt() {
+	if g.active {
+		_, _ = os.Stdout.Write([]byte("\x1b8")) // DECRC
 	}
 }
 
