@@ -19,6 +19,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
 )
@@ -82,6 +83,7 @@ const (
 	cmdNewNamespace
 	cmdUseNamespace
 	cmdDropNamespace
+	cmdHelp
 )
 
 type paletteCmd struct {
@@ -98,6 +100,7 @@ var palette = []paletteCmd{
 	{cmdNewNamespace, "[new namespace]"},
 	{cmdUseNamespace, "[use namespace]"},
 	{cmdDropNamespace, "[drop namespace]"},
+	{cmdHelp, "[help]"},
 }
 
 // menuPayload is the data attached to a main-menu row: either a command or a
@@ -120,6 +123,7 @@ type mode int
 const (
 	modePick  mode = iota // a type-to-filter menu (main, scrollback, namespace)
 	modeInput             // a free-text prompt
+	modeHelp              // the detailed help screen ([help] command)
 )
 
 // pickPurpose says what the active picker selects, so Enter dispatches correctly.
@@ -163,6 +167,10 @@ type Model struct {
 
 	pendingID string // session awaiting a scrollback choice
 
+	// width is the terminal width, used to size the bordered boxes and the picker
+	// content inside them (see setWidth, box).
+	width int
+
 	// result is what the menu resolved to; app.Run reads it via Result after the
 	// program exits and carries it out (attach, switch, or nothing).
 	result Result
@@ -171,13 +179,37 @@ type Model struct {
 	quit   bool
 }
 
+const (
+	// boxChrome is the horizontal cells a bordered box adds around its content:
+	// the two vertical borders plus a one-space pad on each side.
+	boxChrome = 4
+	// minBoxWidth keeps a box drawable before the first WindowSizeMsg arrives and
+	// on very narrow terminals.
+	minBoxWidth = 24
+)
+
 // New builds the menu model over a store and controller.
 func New(st *store.Store, ctrl Controller) Model {
 	m := Model{st: st, ctrl: ctrl, ns: store.DefaultNamespace, input: newInput("> "), pick: newPicker()}
 	m.curSessionID, m.curSession = ctrl.CurrentSession()
+	m.setWidth(80) // a sane default until the first WindowSizeMsg
 	m.showMenu()
 
 	return m
+}
+
+// setWidth records the terminal width and sizes the picker's input and list to
+// the content area inside the box border (the terminal width minus the box
+// chrome), so their rows fill each bordered line exactly without wrapping.
+func (m *Model) setWidth(w int) {
+	if w < minBoxWidth {
+		w = minBoxWidth
+	}
+
+	m.width = w
+	inner := w - boxChrome
+	m.pick.setWidth(inner)
+	m.input.SetWidth(inner)
 }
 
 // newInput builds the single-line textarea used for every text field: the
@@ -234,7 +266,6 @@ func (m *Model) menuItems() []pickerItem {
 	for _, c := range palette {
 		items = append(items, pickerItem{
 			label:   c.label,
-			cmd:     true,
 			payload: menuPayload{isCmd: true, cmdID: c.id},
 		})
 	}
@@ -293,8 +324,7 @@ type spawnedMsg struct {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.pick.setWidth(msg.Width)
-		m.input.SetWidth(msg.Width)
+		m.setWidth(msg.Width)
 
 		return m, nil
 	case spawnedMsg:
@@ -318,6 +348,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePick(msg)
 		case modeInput:
 			return m.updateInput(msg)
+		case modeHelp:
+			// Any key dismisses the help screen back to the main menu.
+			m.showMenu()
+
+			return m, nil
 		}
 	}
 
@@ -456,6 +491,8 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 		m.showNamespaces(pickUseNamespace)
 	case cmdDropNamespace:
 		m.showNamespaces(pickDropNamespace)
+	case cmdHelp:
+		m.mode = modeHelp
 	}
 
 	return m, nil
@@ -588,64 +625,175 @@ func (m Model) View() tea.View {
 	}
 
 	content := m.viewPick()
-	if m.mode == modeInput {
+
+	switch m.mode {
+	case modeInput:
 		content = m.viewInput()
+	case modeHelp:
+		content = m.viewHelp()
 	}
 
 	return tea.View{Content: content, AltScreen: false}
 }
 
 // maxRows caps the inline picker's list height so a long session list stays
-// compact (paginating) rather than pushing the screen above it out of view.
-const maxRows = 15
+// compact rather than pushing the screen above it out of view; beyond it the
+// list pages internally as the cursor moves (see newPicker).
+const maxRows = 10
 
+// viewPick frames the menu as two stacked boxes sharing a divider: the query box
+// (its top border titled with the session/namespace/status header) above the list
+// box, matching the inline picker layout.
 func (m Model) viewPick() string {
+	return m.box(m.headerTitle(), []string{m.pick.inputView(), m.pick.listView()})
+}
+
+// headerTitle is the text embedded in the top border of the query box: the
+// session (when nested), the active namespace, and any transient status note.
+func (m Model) headerTitle() string {
 	th := styles()
+
+	title := th.dim.Render("namespace: ") + th.item.Render(m.ns)
+	if m.curSession != "" {
+		title = th.dim.Render("session: ") + th.item.Render(m.curSession) + th.dim.Render(" · ") + title
+	}
+
+	if m.status != "" {
+		title += th.dim.Render(" · ") + th.status.Render(m.status)
+	}
+
+	return title
+}
+
+// box draws a rounded border around one or more stacked sections, the title
+// embedded in the top border and a divider drawn between sections. Every menu
+// view is framed with it; the width is m.width and each content line is fitted to
+// the inner area so the borders stay aligned (see padTrunc).
+func (m Model) box(title string, sections []string) string {
+	th := styles()
+	bd := lipgloss.RoundedBorder()
+	contentW := m.width - boxChrome
+	left := th.box.Render(bd.Left)
+	right := th.box.Render(bd.Right)
+
+	// rule draws a full-width horizontal edge between the given corners (the
+	// divider and the bottom border).
+	rule := func(l, r string) string {
+		return th.box.Render(l + strings.Repeat(bd.Top, m.width-2) + r)
+	}
 
 	var b strings.Builder
 
-	header := th.title.Render("tm") + "  " + th.dim.Render("namespace: "+m.ns)
-	if m.curSession != "" {
-		header += "  " + th.session.Render("in session: "+m.curSession)
+	b.WriteString(m.topBorder(title))
+
+	for i, sec := range sections {
+		if i > 0 {
+			b.WriteString("\n")
+			b.WriteString(rule(bd.MiddleLeft, bd.MiddleRight))
+		}
+
+		for ln := range strings.SplitSeq(sec, "\n") {
+			b.WriteString("\n")
+			b.WriteString(left)
+			b.WriteString(" ")
+			b.WriteString(padTrunc(ln, contentW))
+			b.WriteString(" ")
+			b.WriteString(right)
+		}
 	}
 
-	b.WriteString(header)
-	b.WriteString("\n\n")
-	b.WriteString(m.pick.view())
 	b.WriteString("\n")
-	b.WriteString(m.footer())
+	b.WriteString(rule(bd.BottomLeft, bd.BottomRight))
 
 	return b.String()
 }
 
-func (m Model) footer() string {
+// topBorder builds the box's top edge with the title sitting just after the left
+// corner and border fill running out to the right corner, truncating the title
+// when it would not fit.
+func (m Model) topBorder(title string) string {
 	th := styles()
+	bd := lipgloss.RoundedBorder()
 
-	keys := `↑/↓ move · type to filter · enter select · esc back`
-	if m.pickFor == pickMenu {
-		if m.curSession != "" {
-			// Inside a session, picking another one switches this terminal to it
-			// rather than nesting; esc returns to the current session.
-			keys = "↑/↓ move · type to filter · enter switch session · esc back to current session"
-		} else {
-			keys = "↑/↓ move · type to filter · enter select · " +
-				`esc quit (sessions keep running) · Ctrl-\ in a session opens this menu`
-		}
-	}
+	left := bd.TopLeft + bd.Top                                              // "╭─"
+	room := m.width - lipgloss.Width(left) - lipgloss.Width(bd.TopRight) - 2 // 2 = the spaces around the title
+	title = ansi.Truncate(title, max(0, room), "…")
+	label := " " + title + " "
 
-	help := th.dim.Render(keys)
-	if m.status != "" {
-		return th.status.Render(m.status) + "\n" + help
-	}
+	fill := max(0, m.width-lipgloss.Width(left)-lipgloss.Width(label)-lipgloss.Width(bd.TopRight))
 
-	return help
+	return th.box.Render(left) + label + th.box.Render(strings.Repeat(bd.Top, fill)+bd.TopRight)
 }
 
-func (m Model) viewInput() string {
+// padTrunc fits s to exactly w display cells: ANSI-aware truncation when it is too
+// wide, space padding when too short, so each boxed line ends flush at the border.
+func padTrunc(s string, w int) string {
+	w = max(0, w)
+	s = ansi.Truncate(s, w, "")
+
+	if gap := w - lipgloss.Width(s); gap > 0 {
+		s += strings.Repeat(" ", gap)
+	}
+
+	return s
+}
+
+// viewHelp renders the detailed help reached via the [help] command. It documents
+// the keys and what each command does — kept off the main menu so that screen
+// stays uncluttered (see viewPick).
+func (m Model) viewHelp() string {
 	th := styles()
 
-	return th.title.Render("TM") + "\n\n" + m.input.View() + "\n\n" +
-		th.dim.Render("enter confirm · esc cancel")
+	var b strings.Builder
+
+	key := th.cmd.Width(18)
+	section := func(title string, rows [][2]string) {
+		b.WriteString(th.session.Render(title))
+		b.WriteString("\n")
+
+		for _, r := range rows {
+			b.WriteString("  ")
+			b.WriteString(key.Render(r[0]))
+			b.WriteString(r[1])
+			b.WriteString("\n")
+		}
+
+		b.WriteString("\n")
+	}
+
+	section("Keys", [][2]string{
+		{"↑/↓, Ctrl-P/N", "move the cursor"},
+		{"type", "fuzzy-filter the list"},
+		{"enter", "select the highlighted row"},
+		{"esc", "back, or quit from the main menu (sessions keep running)"},
+		{"Ctrl-C", "quit"},
+		{`Ctrl-\`, "reopen this menu from inside a session"},
+	})
+
+	switchHint := "attach to a session"
+	if m.curSession != "" {
+		switchHint = "switch this terminal to a session"
+	}
+
+	section("Commands", [][2]string{
+		{"<session>", switchHint},
+		{"[new session]", "create and start a new session"},
+		{"[detach session]", "leave tm; every session keeps running"},
+		{"[new namespace]", "create a namespace and switch to it"},
+		{"[use namespace]", "switch the active namespace (* shows all)"},
+		{"[drop namespace]", "delete a namespace"},
+		{"[help]", "show this help"},
+	})
+
+	return m.box("tm — help", []string{strings.TrimRight(b.String(), "\n")}) +
+		"\n" + th.dim.Render("press any key to go back")
+}
+
+// viewInput frames the active free-text prompt (naming a session or namespace, a
+// custom line count) in the same box as the menu, its header carried in the top
+// border.
+func (m Model) viewInput() string {
+	return m.box(m.headerTitle(), []string{m.input.View()})
 }
 
 type theme struct {
@@ -655,6 +803,8 @@ type theme struct {
 	cmd     lipgloss.Style
 	status  lipgloss.Style
 	session lipgloss.Style
+	item    lipgloss.Style
+	box     lipgloss.Style
 }
 
 // styles builds the lipgloss styles once, on first render.
@@ -666,5 +816,7 @@ var styles = sync.OnceValue(func() theme {
 		cmd:     lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
 		status:  lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
 		session: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),
+		item:    lipgloss.NewStyle().Foreground(lipgloss.Color("15")),
+		box:     lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 	}
 })

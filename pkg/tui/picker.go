@@ -8,13 +8,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// pickerItem is one selectable row. cmd marks the fixed [bracketed] commands so
-// the delegate tints them apart from sessions. text overrides the fuzzy-match
-// target (it defaults to label). payload carries whatever the caller needs when
-// the row is chosen.
+// pickerItem is one selectable row. text overrides the fuzzy-match target (it
+// defaults to label). payload carries whatever the caller needs when the row is
+// chosen.
 type pickerItem struct {
 	label   string
-	cmd     bool
 	text    string
 	payload any
 }
@@ -38,9 +36,9 @@ func (a listAdapter) FilterValue() string { return a.matchText() }
 // each, matching the two-space indent of unselected rows so labels stay aligned.
 const cursorGlyph = "●"
 
-// pickerDelegate renders one row: a purple circle plus the label when selected,
-// a plain indented label otherwise. Command rows are tinted so they read apart
-// from the sessions above them.
+// pickerDelegate renders one row: the cursor glyph plus the label when selected,
+// a plain white indented label otherwise. Commands ([bracketed]) read apart from
+// sessions by their brackets alone, so every unselected row shares one color.
 type pickerDelegate struct{}
 
 func (pickerDelegate) Height() int                         { return 1 }
@@ -53,14 +51,13 @@ func (pickerDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		return
 	}
 
-	switch {
-	case index == m.Index():
+	if index == m.Index() {
 		_, _ = io.WriteString(w, styles().sel.Render(cursorGlyph+" "+a.label))
-	case a.cmd:
-		_, _ = io.WriteString(w, "  "+styles().cmd.Render(a.label))
-	default:
-		_, _ = io.WriteString(w, "  "+a.label)
+
+		return
 	}
+
+	_, _ = io.WriteString(w, "  "+styles().item.Render(a.label))
 }
 
 // pickerAction is what a key press resolved to.
@@ -90,6 +87,10 @@ func newPicker() picker {
 	l.SetShowFilter(false)
 	l.SetShowStatusBar(false)
 	l.SetShowHelp(false)
+	// No pagination chrome: the inline list is sized to its visible rows (see
+	// applySize), so the page dots would only steal a row and split the items.
+	// Navigation still pages internally when the list overflows maxRows.
+	l.SetShowPagination(false)
 	l.SetStatusBarItemName("match", "matches") // renders "No matches." when empty
 	l.DisableQuitKeybindings()
 
@@ -179,7 +180,8 @@ func (p picker) selected() (pickerItem, bool) {
 	return a.pickerItem, true
 }
 
-// view renders the query line above the list.
-func (p picker) view() string {
-	return p.input.View() + "\n\n" + p.list.View()
-}
+// inputView renders the query line; listView renders the list below it. They are
+// exposed separately so the menu can frame each in its own bordered section (the
+// query box and the list box — see Model.box).
+func (p picker) inputView() string { return p.input.View() }
+func (p picker) listView() string  { return p.list.View() }

@@ -11,7 +11,7 @@ import (
 func paletteItems() []pickerItem {
 	items := make([]pickerItem, len(palette))
 	for i, c := range palette {
-		items[i] = pickerItem{label: c.label, cmd: true, payload: menuPayload{isCmd: true, cmdID: c.id}}
+		items[i] = pickerItem{label: c.label, payload: menuPayload{isCmd: true, cmdID: c.id}}
 	}
 
 	return items
@@ -58,8 +58,14 @@ func TestPaletteFuzzyMatchesMultiple(t *testing.T) {
 
 func TestFilterEmptyQueryKeepsOrder(t *testing.T) {
 	g := got.T(t)
-	order := rankItems(paletteItems(), "")
-	g.Eq(order, []int{0, 1, 2, 3, 4})
+	items := paletteItems()
+
+	want := make([]int, len(items))
+	for i := range want {
+		want[i] = i
+	}
+
+	g.Eq(rankItems(items, ""), want)
 }
 
 // Sessions are found by the same fuzzy name match as everything else.

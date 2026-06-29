@@ -100,8 +100,8 @@ func TestFirstLaunchAttachErasesPicker(t *testing.T) {
 		True(strings.Contains(screen, "OUTER-SHELL-PROMPT"))
 	g.Desc("the session history must show after attach: %q", screen).
 		True(strings.Contains(screen, "AAA-HIST-MARK"))
-	g.Desc("the picker must be erased — no footer left behind: %q", screen).
-		False(strings.Contains(screen, "type to filter"))
+	g.Desc("the picker must be erased — no command rows left behind: %q", screen).
+		False(strings.Contains(screen, "[new session]"))
 	g.Desc("the picker must be erased — no header left behind: %q", screen).
 		False(strings.Contains(screen, "namespace: default"))
 

@@ -95,10 +95,10 @@ func RunDaemon(id string) error {
 
 	_ = st.SaveSession(sess)
 
-	werr := os.WriteFile(st.Paths().ReadyFile(id), nil, 0o600)
-	if werr != nil {
+	wErr := os.WriteFile(st.Paths().ReadyFile(id), nil, 0o600)
+	if wErr != nil {
 		// Non-fatal: the spawner will time out, but the session still runs.
-		fmt.Fprintln(os.Stderr, "tm daemon: write ready marker:", werr)
+		fmt.Fprintln(os.Stderr, "tm daemon: write ready marker:", wErr)
 	}
 
 	return d.Wait()

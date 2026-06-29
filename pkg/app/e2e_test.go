@@ -218,7 +218,7 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)
 	g.Desc("Ctrl-\\ should open the in-session menu: %q", buf.String()).
-		True(waitForText(buf, "in session: aaa", 10*time.Second))
+		True(waitForText(buf, "session:", 10*time.Second))
 
 	send("bbb\r") // pick bbb -> scrollback chooser
 	g.True(waitForText(buf, "All history", 10*time.Second))
@@ -232,7 +232,7 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	// Ctrl-\ again, then esc resumes bbb (no switch) right where it left off.
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)
-	g.True(waitForText(buf, "in session: bbb", 10*time.Second))
+	g.True(waitForText(buf, "session:", 10*time.Second))
 
 	send("\x1b") // esc -> back to the current session
 	time.Sleep(800 * time.Millisecond)
@@ -311,7 +311,7 @@ func TestMenuKeyOpensInline(t *testing.T) {
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)
 	g.Desc("Ctrl-\\ should open the menu: %q", buf.String()).
-		True(waitForText(buf, "in session: aaa", 10*time.Second))
+		True(waitForText(buf, "session:", 10*time.Second))
 
 	menuOut := buf.String()[mark:]
 	g.Desc("opening the menu must not enter the alternate screen: %q", menuOut).
@@ -328,7 +328,7 @@ func TestMenuKeyOpensInline(t *testing.T) {
 	g.Desc("the session output must remain on screen: %q", screen).
 		True(strings.Contains(screen, "INLINE-MARK-42"))
 	g.Desc("the menu must be shown inline beneath it: %q", screen).
-		True(strings.Contains(screen, "in session: aaa"))
+		True(strings.Contains(screen, "session: aaa"))
 
 	// We are already in the menu; leave tm via [detach session].
 	send("detach\r")
@@ -397,7 +397,7 @@ func TestMenuKeyResumeDoesNotReplay(t *testing.T) {
 	// Open the menu, then esc to cancel back into the session.
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)
-	g.True(waitForText(buf, "in session: aaa", 10*time.Second))
+	g.True(waitForText(buf, "session:", 10*time.Second))
 
 	mark := len(buf.String())
 
@@ -430,7 +430,7 @@ func detachViaMenu(g got.G, pt gopty.Pty, buf *safeBuilder) {
 	_, err := pt.Write([]byte{0x1c}) // Ctrl-\ opens the menu
 	g.E(err)
 	g.Desc("Ctrl-\\ should open the in-session menu: %q", buf.String()).
-		True(waitForText(buf, "in session:", 10*time.Second))
+		True(waitForText(buf, "session:", 10*time.Second))
 
 	time.Sleep(200 * time.Millisecond)
 

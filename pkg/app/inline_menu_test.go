@@ -98,7 +98,7 @@ func TestInlineMenuClearsLikeFzf(t *testing.T) {
 	// Run tm inside aaa: the menu must appear without switching to the alt screen.
 	_, err = pt.Write([]byte(bin + "\r"))
 	g.E(err)
-	g.True(waitForText(buf, "switch session", 10*time.Second))
+	g.True(waitForText(buf, "[new session]", 10*time.Second))
 
 	menuOut := buf.String()[mark:]
 	g.Desc("inner menu must not enter the alternate screen: %q", menuOut).
@@ -124,7 +124,7 @@ func TestInlineMenuClearsLikeFzf(t *testing.T) {
 	g.Desc("the target session history must replay: %q", screen).
 		True(strings.Contains(screen, "BBB-HISTORY-MARK"))
 	g.Desc("the picker must be erased, not left on screen: %q", screen).
-		False(strings.Contains(screen, "type to filter"))
+		False(strings.Contains(screen, "[new session]"))
 
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)

@@ -91,7 +91,7 @@ func TestCtrlBackslashEscPreservesPrompt(t *testing.T) {
 
 	// Open the menu (Ctrl-\) and immediately cancel it (esc) to resume aaa.
 	send(string([]byte{0x1c}))
-	step("menu-reopened", "switch session")
+	step("menu-reopened", "[new session]")
 	send(string([]byte{0x1b}))
 	time.Sleep(1200 * time.Millisecond)
 
@@ -115,7 +115,7 @@ func TestCtrlBackslashEscPreservesPrompt(t *testing.T) {
 	// Exit tm cleanly via the menu, then let the process go.
 	_, _ = pt.Write([]byte{0x1c})
 
-	g.True(waitForText(buf, "in session:", 8*time.Second))
+	g.True(waitForText(buf, "session:", 8*time.Second))
 
 	_, _ = pt.Write([]byte("detach\r"))
 

@@ -79,11 +79,12 @@ func TestModelShowsCurrentSession(t *testing.T) {
 	g := got.T(t)
 
 	in := New(newStore(g, t), sessCtrl{name: "my-work"})
-	g.Has(in.viewPick(), "in session: my-work")
+	g.Has(in.viewPick(), "session:") // the header label
+	g.Has(in.viewPick(), "my-work")  // the session name
 
 	out := New(newStore(g, t), fakeCtrl{})
 	g.Eq(out.curSession, "")
-	g.True(!strings.Contains(out.viewPick(), "in session"))
+	g.True(!strings.Contains(out.viewPick(), "session:")) // only "namespace:" when not nested
 }
 
 // The session this tm is running inside is left out of the attach list — you are
@@ -177,6 +178,26 @@ func TestModelDetachSessionQuits(t *testing.T) {
 	g.NotNil(cmd)
 	_, ok := cmd().(tea.QuitMsg)
 	g.True(ok)
+}
+
+// Selecting [help] opens the detailed help screen; any key dismisses it back to
+// the main menu. The key hints live here rather than cluttering every frame.
+func TestModelHelpScreen(t *testing.T) {
+	g := got.T(t)
+	m := New(newStore(g, t), fakeCtrl{})
+
+	m = typeStr(m, "help") // only [help] fuzzy-matches "help"
+	m = send(m, keyEnterMsg)
+	g.Eq(m.mode, modeHelp)
+
+	v := m.View().Content
+	g.Has(v, "tm — help")
+	g.Has(v, "[new session]")
+	g.Has(v, "press any key to go back")
+
+	m = send(m, keyEnterMsg) // any key returns to the menu
+	g.Eq(m.mode, modePick)
+	g.Eq(m.pickFor, pickMenu)
 }
 
 // Typing "nn" then a name creates and switches to a new namespace.
