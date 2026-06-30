@@ -50,6 +50,18 @@ func TestSanitizeReplay(t *testing.T) {
 	check("\x1b]4;1;?\x07", "")    // OSC palette query
 	check("\x1bP+q544e\x1b\\", "") // XTGETTCAP request
 	check("\x1bP$qm\x1b\\", "")    // DECRQSS request
+	check("\x1b[>q", "")           // XTVERSION (CSI > q)
+	check("\x1b[>0q", "")          // XTVERSION with explicit param
+	check("\x1b[18t", "")          // XTWINOPS report: text-area size in chars
+	check("\x1b[14t", "")          // XTWINOPS report: text-area size in pixels
+	check("\x1b[14;2t", "")        // XTWINOPS report variant (first param decides)
+	check("\x1b[11t", "")          // XTWINOPS report: window state
+
+	// The exact sequences from the bug report: a prompt's startup probes left in
+	// the scrollback. Replaying them made the terminal answer with ">|xterm.js(…)"
+	// and ";37;152t", which got typed into the session.
+	check("\x1b[18t\x1b[>q\x1b[18t", "")
+	check("prompt$ \x1b[18t\x1b[>q\x1b[18t", "prompt$ ")
 
 	// Sets and stateful sequences that look similar are kept.
 	check("\x1b[>1u", "\x1b[>1u")                                             // Kitty keyboard push
@@ -57,6 +69,10 @@ func TestSanitizeReplay(t *testing.T) {
 	check("\x1b[>4n", "\x1b[>4n")                                             // XTMODKEYS reset (not DSR)
 	check("\x1b]0;title\x07", "\x1b]0;title\x07")                             // OSC window title set
 	check("\x1b]11;rgb:0000/0000/0000\x07", "\x1b]11;rgb:0000/0000/0000\x07") // OSC color set
+	check("\x1b[2 q", "\x1b[2 q")                                             // DECSCUSR set cursor style (not XTVERSION)
+	check("\x1b[8;24;80t", "\x1b[8;24;80t")                                   // XTWINOPS resize text area (action, not a query)
+	check("\x1b[3;0;0t", "\x1b[3;0;0t")                                       // XTWINOPS move window (action)
+	check("\x1b[22;0t", "\x1b[22;0t")                                         // XTWINOPS push title (action)
 
 	// A sequence truncated at the buffer's end is kept verbatim — its query-ness
 	// can't be decided until the missing tail arrives, and dropping a partial

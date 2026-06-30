@@ -14,11 +14,12 @@ const (
 // Queries: the scrollback is the raw PTY output, so it contains every escape
 // sequence the session's programs emitted — including capability probes: DECRQM
 // (CSI ? Ps $p), DSR (CSI 6n), Device Attributes (CSI c), the Kitty keyboard
-// query (CSI ? u), OSC color queries (OSC 11 ; ? ST) and XTGETTCAP/DECRQSS (DCS
+// query (CSI ? u), XTVERSION (CSI > q), the XTWINOPS report requests (CSI 18 t
+// and friends), OSC color queries (OSC 11 ; ? ST) and XTGETTCAP/DECRQSS (DCS
 // + q / $ q). Those solicit a reply. Replaying them makes the attaching terminal
 // answer, and the answers arrive on the relay's stdin and get forwarded into the
-// session as if typed — surfacing as stray bytes like "2026;2$y2027;0$y1u" at
-// the prompt.
+// session as if typed — surfacing as stray bytes like "2026;2$y2027;0$y1u", or
+// ">|xterm.js(...)" and ";37;152t", at the prompt.
 //
 // Clears: replaying history rebuilds the terminal's scrollback, so a recorded
 // erase-the-screen (ED2, CSI 2 J) or erase-the-scrollback (ED3, CSI 3 J) wipes
@@ -123,7 +124,7 @@ func scanCSI(p []byte) (n int, drop, complete bool) {
 		return i, false, true // malformed; not a query
 	}
 
-	return i, isCSIQuery(private, intermediates, final) || isClearDisplay(private, params, final), true
+	return i, isCSIQuery(private, params, intermediates, final) || isClearDisplay(private, params, final), true
 }
 
 // isClearDisplay reports whether a CSI erases content that lives in the replayed
@@ -140,7 +141,7 @@ func isClearDisplay(private byte, params []byte, final byte) bool {
 }
 
 // isCSIQuery reports whether a parsed CSI sequence solicits a reply.
-func isCSIQuery(private byte, intermediates []byte, final byte) bool {
+func isCSIQuery(private byte, params, intermediates []byte, final byte) bool {
 	switch final {
 	case 'c': // Device Attributes: primary (CSI c), secondary (CSI > c), tertiary (CSI = c).
 		return true
@@ -151,6 +152,27 @@ func isCSIQuery(private byte, intermediates []byte, final byte) bool {
 		return private == '?'
 	case 'p': // DECRQM (CSI ? Ps $ p). Keep DECSTR soft reset (CSI ! p) and DECSCUSR.
 		return private == '?' && bytes.IndexByte(intermediates, '$') >= 0
+	case 'q': // XTVERSION (CSI > q). Keep DECSCUSR (CSI Ps SP q), DECLL, DECSCA.
+		return private == '>'
+	case 't': // XTWINOPS report requests (CSI 18 t etc.); resize/move actions stay.
+		return private == 0 && isWindowOpQuery(params)
+	}
+
+	return false
+}
+
+// isWindowOpQuery reports whether an XTWINOPS sequence (CSI Ps … t) is a report
+// request that solicits a reply, keyed by its first parameter: 11 (window state),
+// 13 (position), 14/15 (pixel sizes), 16 (cell size), 18/19 (character sizes),
+// 20/21 (icon/window title). The action variants — 1–10 (deiconify, iconify,
+// move, resize, raise/lower, refresh, maximize, fullscreen) and 22/23 (push/pop
+// title) — carry no reply and are kept, so a replayed resize still replays.
+func isWindowOpQuery(params []byte) bool {
+	first, _, _ := bytes.Cut(params, []byte{';'})
+
+	switch string(first) {
+	case "11", "13", "14", "15", "16", "18", "19", "20", "21":
+		return true
 	}
 
 	return false
