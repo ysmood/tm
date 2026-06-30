@@ -204,10 +204,18 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 
+	// Each repeated menu/chooser ("session:", "All history") is matched only in the
+	// output produced after the keystroke that should redraw it (waitForTextFrom
+	// from a mark), never against the same token left in the buffer by an earlier
+	// screen. Otherwise the wait returns on the stale copy and the next key is sent
+	// before the new screen is up — under a loaded container that drops the key,
+	// failing the resume assertion or hanging on a never-detached tm.
+
 	// Attach to aaa from the top-level menu.
 	g.True(waitForText(buf, "aaa", 10*time.Second))
+	mark := len(buf.String())
 	send("aaa\r") // pick aaa -> scrollback chooser
-	g.True(waitForText(buf, "All history", 10*time.Second))
+	g.True(waitForTextFrom(buf, mark, "All history", 10*time.Second))
 	send("\r") // attach with all history
 	time.Sleep(800 * time.Millisecond)
 
@@ -215,13 +223,15 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	g.Desc("should start on aaa: %q", buf.String()).True(waitForText(buf, "WHO=aaa", 10*time.Second))
 
 	// Ctrl-\ opens the in-session menu instead of detaching; pick bbb to switch.
+	mark = len(buf.String())
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)
 	g.Desc("Ctrl-\\ should open the in-session menu: %q", buf.String()).
-		True(waitForText(buf, "session:", 10*time.Second))
+		True(waitForTextFrom(buf, mark, "session:", 10*time.Second))
 
+	mark = len(buf.String())
 	send("bbb\r") // pick bbb -> scrollback chooser
-	g.True(waitForText(buf, "All history", 10*time.Second))
+	g.True(waitForTextFrom(buf, mark, "All history", 10*time.Second))
 	send("\r") // switch to bbb in place
 	time.Sleep(1*time.Second + 200*time.Millisecond)
 
@@ -230,9 +240,10 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 		True(waitForText(buf, "WHO=bbb", 10*time.Second))
 
 	// Ctrl-\ again, then esc resumes bbb (no switch) right where it left off.
+	mark = len(buf.String())
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)
-	g.True(waitForText(buf, "session:", 10*time.Second))
+	g.True(waitForTextFrom(buf, mark, "session:", 10*time.Second))
 
 	send("\x1b") // esc -> back to the current session
 	time.Sleep(800 * time.Millisecond)
@@ -243,7 +254,9 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 
 	detachViaMenu(g, pt, buf)
 
-	_ = c.Wait()
+	// Bounded so a future regression that fails to detach fails fast instead of
+	// hanging until the test's PanicAfter; detach must leave tm for the launcher.
+	waitExit(c, 10*time.Second)
 }
 
 // TestMenuKeyOpensInline proves the menu key opens the menu inline — like running
@@ -517,10 +530,15 @@ func TestMenuKeyResumeDoesNotReplay(t *testing.T) {
 // still running in the background. It is used by the menu-driven e2e tests, which
 // previously just pressed Ctrl-\ to exit.
 func detachViaMenu(g got.G, pt gopty.Pty, buf *safeBuilder) {
+	mark := len(buf.String())
+
 	_, err := pt.Write([]byte{0x1c}) // Ctrl-\ opens the menu
 	g.E(err)
+	// Match a freshly rendered menu, not a "session:" header left in the buffer by
+	// an earlier menu, so "detach\r" below isn't typed into the session before the
+	// menu has actually opened (which would never detach, hanging the test).
 	g.Desc("Ctrl-\\ should open the in-session menu: %q", buf.String()).
-		True(waitForText(buf, "session:", 10*time.Second))
+		True(waitForTextFrom(buf, mark, "session:", 10*time.Second))
 
 	time.Sleep(200 * time.Millisecond)
 
@@ -539,6 +557,29 @@ func waitForText(buf *safeBuilder, want string, timeout time.Duration) bool {
 	}
 
 	return strings.Contains(buf.String(), want)
+}
+
+// waitForTextFrom waits for want to appear in the output produced after byte
+// offset from. A plain waitForText scans the whole accumulated buffer, so a token
+// that already appeared earlier — a menu header that reopens ("session:"), the
+// scrollback chooser shown again ("All history") — matches the stale copy and
+// returns instantly, letting the next keystroke be sent before the new screen has
+// rendered (which, under a loaded container, drops the key and either fails the
+// next assertion or hangs waiting for tm to exit). Marking the buffer length
+// before the action and matching only past it waits for the fresh render instead.
+func waitForTextFrom(buf *safeBuilder, from int, want string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s := buf.String(); len(s) >= from && strings.Contains(s[from:], want) {
+			return true
+		}
+
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	s := buf.String()
+
+	return len(s) >= from && strings.Contains(s[from:], want)
 }
 
 // killLeftoverDaemons registers a cleanup that kills any session daemons still
