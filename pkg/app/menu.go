@@ -162,6 +162,8 @@ func Run() error {
 // relay; pressing the menu key (Ctrl-\) inside the session returns here and
 // reopens the menu — framed as in-session — so esc resumes that session, picking
 // another switches to it, and [detach session] leaves tm for the launching shell.
+// Exiting the session's shell ends the session and drops back to the top-level
+// menu (rather than leaving tm), so the user can pick or start another session.
 // A failed attach reaps the unreachable session and reopens the menu with a note.
 //
 // The menu always acts only once it has fully torn down (the inline picker is
@@ -172,6 +174,38 @@ func Run() error {
 // alternate screen), so Bubble Tea's teardown leaves the terminal — and its
 // scrollback — sane, and the relay resets the terminal itself whenever it hands
 // it back.
+// pickTarget maps a menu result to the session the relay should (re)attach, or
+// reports leave=true when the user chose to leave tm. curID is the session the
+// menu was framed as running inside ("" at the top level).
+//
+// A picked session (attach or switch — in the relay-menu both just resolve to a
+// target on this terminal) yields that target. esc/Ctrl-C (ActionNone) leaves tm
+// at the top level but resumes the current session when reopened from one,
+// replaying nothing (HistNone) so it doesn't reprint a screen of history over the
+// session's still-visible output. [detach session] leaves tm with every session
+// still running, first resetting the terminal if we came from a session so the
+// launching shell gets it clean.
+func pickTarget(res tui.Result, curID string) (targetID string, hist proto.HistMode, lines uint32, leave bool) {
+	switch res.Action {
+	case tui.ActionAttach, tui.ActionSwitch:
+		return res.ID, res.Hist, res.Lines, false
+	case tui.ActionNone:
+		if curID == "" {
+			return "", 0, 0, true
+		}
+
+		return curID, proto.HistNone, 0, false
+	case tui.ActionDetach:
+		if curID != "" {
+			_, _ = os.Stdout.Write(attach.TerminalRestore)
+		}
+
+		return "", 0, 0, true
+	}
+
+	return "", 0, 0, true
+}
+
 func runMenu(st *store.Store, ctrl *controller) error {
 	var (
 		status  string
@@ -192,38 +226,8 @@ func runMenu(st *store.Store, ctrl *controller) error {
 
 		status = ""
 
-		var (
-			targetID string
-			hist     proto.HistMode
-			lines    uint32
-		)
-
-		switch res.Action {
-		case tui.ActionAttach, tui.ActionSwitch:
-			// A picked session. In the relay-menu both resolve to a target to
-			// (re)attach on this terminal — the daemon round-trip switch is only for
-			// an inner tm (runInSession), never here.
-			targetID, hist, lines = res.ID, res.Hist, res.Lines
-		case tui.ActionNone:
-			// esc / Ctrl-C. At the top level it leaves tm; reopened from a session it
-			// resumes that session. The inline menu erased itself on the way out and
-			// the relay never reset the screen, so the session's output is still there
-			// untouched — replay nothing (HistNone), or we would reprint a screen of
-			// history on top of what is already shown. The user just drops back in.
-			if curID == "" {
-				return nil
-			}
-
-			targetID, hist = curID, proto.HistNone
-		case tui.ActionDetach:
-			// [detach session]: leave tm, every session still running. When we came
-			// from a session (the menu was drawn inline over its screen and the relay
-			// left the terminal untouched), reset it so the launching shell gets it
-			// clean; at the top level there is nothing to undo.
-			if curID != "" {
-				_, _ = os.Stdout.Write(attach.TerminalRestore)
-			}
-
+		targetID, hist, lines, leave := pickTarget(res, curID)
+		if leave {
 			return nil
 		}
 
@@ -237,7 +241,7 @@ func runMenu(st *store.Store, ctrl *controller) error {
 			_, _ = os.Stdout.Write(attach.TerminalRestore)
 		}
 
-		menu, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines})
+		outcome, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines})
 		if aerr != nil {
 			// The relay couldn't reach the daemon (a dead session). Reap it so it
 			// stops reappearing in the menu — otherwise reselecting it bounces back
@@ -248,7 +252,7 @@ func runMenu(st *store.Store, ctrl *controller) error {
 			continue
 		}
 
-		if menu {
+		if outcome == attach.OutcomeMenu {
 			// Ctrl-\: reopen the menu framed as in-session, so esc resumes and a pick
 			// switches.
 			curID, curName = targetID, sessionName(st, targetID)
@@ -256,7 +260,17 @@ func runMenu(st *store.Store, ctrl *controller) error {
 			continue
 		}
 
-		return nil // the session's shell exited: leave tm for the launching shell
+		if outcome == attach.OutcomeSessionExited {
+			// The session's shell exited, so the session is gone (its daemon removed
+			// it). Fall back to the top-level menu instead of leaving tm, so the user
+			// can pick or start another session. The relay already reset the terminal
+			// on its way out, so the menu draws on a clean screen.
+			curID, curName = "", ""
+
+			continue
+		}
+
+		return nil // local input ended (the terminal went away): leave tm
 	}
 }
 

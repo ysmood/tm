@@ -336,6 +336,96 @@ func TestMenuKeyOpensInline(t *testing.T) {
 	_ = c.Wait()
 }
 
+// TestSessionExitReturnsToMenu proves that exiting the session's shell ends the
+// session and drops back to the top-level tm menu (rather than leaving tm), so the
+// user can pick or start another session. The exited session is gone from the
+// store, and esc at the top-level menu then leaves tm.
+func TestSessionExitReturnsToMenu(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(120 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmex")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+	g.Setenv("TM_HOME", t.TempDir())
+	g.Setenv("XDG_RUNTIME_DIR", rt)
+	killLeftoverDaemons(g)
+
+	bin := buildTM(g, t)
+
+	p, err := config.New()
+	g.E(err)
+	g.E(p.EnsureDirs())
+	st := store.New(p)
+	sess := store.Session{
+		ID: "aaa", Name: "aaa", Namespace: store.DefaultNamespace,
+		Shell: "/bin/sh", CreatedAt: time.Unix(1, 0),
+	}
+	g.E(st.SaveSession(sess))
+	g.E(app.SpawnWith(bin, p, sess))
+
+	pt, err := gopty.New()
+	g.E(err)
+	g.E(pt.Resize(120, 40))
+
+	defer func() { _ = pt.Close() }()
+
+	c := pt.Command(bin) // the real menu, so the relay loop runs
+	c.Env = os.Environ()
+	g.E(c.Start())
+
+	buf := &safeBuilder{}
+
+	go func() { _, _ = io.Copy(buf, pt) }()
+
+	send := func(s string) {
+		_, werr := pt.Write([]byte(s))
+		g.E(werr)
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// waitFrom waits for want to appear in the output produced after offset from, so
+	// the menu reappearing is matched freshly rather than against the initial menu.
+	waitFrom := func(from int, want string) bool {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if s := buf.String(); len(s) >= from && strings.Contains(s[from:], want) {
+				return true
+			}
+
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		return false
+	}
+
+	// Attach to aaa, then confirm we are in its live shell.
+	g.True(waitForText(buf, "aaa", 10*time.Second))
+	send("aaa\r")
+	g.True(waitForText(buf, "All history", 10*time.Second))
+	send("\r")
+	time.Sleep(800 * time.Millisecond)
+
+	send("echo IN-SHELL-$((6*7))\r")
+	g.Desc("session output: %q", buf.String()).True(waitForText(buf, "IN-SHELL-42", 10*time.Second))
+
+	mark := len(buf.String())
+
+	// Exit the shell: the session ends and tm returns to the top-level menu.
+	send("exit\r")
+
+	g.Desc("exiting the shell must return to the tm menu: %q", buf.String()[mark:]).
+		True(waitFrom(mark, "[new session]"))
+
+	// The exited session is really gone — its daemon removed the session's files,
+	// so this was an exit, not a detach.
+	g.True(waitGone(st, "aaa", 10*time.Second))
+
+	// esc at the top-level menu leaves tm for the launching shell.
+	send(string([]byte{0x1b}))
+	waitExit(c, 8*time.Second)
+}
+
 // TestMenuKeyResumeDoesNotReplay proves that opening the menu with Ctrl-\ and then
 // pressing esc to cancel just drops back into the session — it does not replay a
 // screen of history, which would reprint what is already shown. The session must

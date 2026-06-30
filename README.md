@@ -44,6 +44,14 @@ leaving the session. From there you can switch to another session or start a new
 one, and pressing `esc` (or `Ctrl-\` again) drops you straight back into the
 session you came from, right where you left off.
 
+### Exit a session
+
+Exiting the session's shell itself (typing `exit` or pressing `Ctrl-D`) ends the
+session for good — its background process stops and it disappears from the list.
+Instead of dropping you out of tm, this returns you to the menu, where you can
+pick another session or start a new one. (To keep the session alive and leave tm,
+use `[detach session]` below.)
+
 ### Detach from a session
 
 To leave tm and return to the shell you launched it from — with every session

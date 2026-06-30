@@ -55,15 +55,32 @@ type Options struct {
 	MenuKey byte
 }
 
+// Outcome reports why the relay stopped, so the caller (app.Run) can decide what
+// to do next.
+type Outcome int
+
+const (
+	// OutcomeInputEnded means local input closed (the terminal went away). There is
+	// nothing to return to, so the caller leaves tm for the launching shell.
+	OutcomeInputEnded Outcome = iota
+	// OutcomeMenu means the user pressed the menu key (Ctrl-\). The session keeps
+	// running; the caller opens the menu over it and re-attaches.
+	OutcomeMenu
+	// OutcomeSessionExited means the session's shell exited (or its daemon dropped
+	// the relay), so the session is gone. The caller returns to the top-level menu
+	// rather than leaving tm, so the user can pick or start another session.
+	OutcomeSessionExited
+)
+
 // Run connects to the session id under p, switches the terminal to raw mode, and
 // proxies I/O until the user presses the menu key, the session exits, or local
-// input ends. It returns menu=true when the menu key was pressed, so the caller
-// (app.Run) can open the menu and re-attach; menu=false means the session ended
-// or input stopped, so the caller should leave tm. When the session asks the
-// relay to switch (a tm running inside it picked another session), Run leaves the
-// current session running and re-attaches to the target — so switching moves this
-// one terminal between sessions instead of nesting relays.
-func Run(p config.Paths, id string, opt Options) (menu bool, err error) {
+// input ends. The returned Outcome tells the caller (app.Run) what to do next:
+// OutcomeMenu re-opens the menu over the still-running session, OutcomeSessionExited
+// returns to the top-level menu, and OutcomeInputEnded leaves tm. When the session
+// asks the relay to switch (a tm running inside it picked another session), Run
+// leaves the current session running and re-attaches to the target — so switching
+// moves this one terminal between sessions instead of nesting relays.
+func Run(p config.Paths, id string, opt Options) (Outcome, error) {
 	in, closeIn := openInput()
 	defer closeIn()
 
@@ -113,7 +130,7 @@ func (r *relay) curConn() *proto.Conn {
 func runRelay(
 	opt Options, in io.Reader, out io.Writer, inFd int, raw bool,
 	addrOf func(string) string, id string,
-) (menu bool, err error) {
+) (outcome Outcome, err error) {
 	if opt.MenuKey == 0 {
 		opt.MenuKey = DefaultMenuKey
 	}
@@ -121,18 +138,19 @@ func runRelay(
 	if raw && term.IsTerminal(inFd) {
 		old, merr := term.MakeRaw(inFd)
 		if merr != nil {
-			return false, merr
+			return OutcomeInputEnded, merr
 		}
 
 		// Hand the terminal back as we found it — but only when we are truly done
-		// with this screen: returning to the launching shell, or stopping because the
-		// session ended. When we stop just so app.Run can open its inline menu
-		// (menu), skip the reset: the menu draws beneath the session's screen, like
-		// running `tm` inside it, so wiping it (a bare \e[?1049l drops the scrollback
-		// on some terminals) is exactly what we must not do. app.Run resets the
-		// terminal itself if it then switches sessions or detaches.
+		// with this screen: leaving tm, or stopping because the session ended (then
+		// app.Run draws the top-level menu over a clean screen). When we stop just so
+		// app.Run can open its inline menu (OutcomeMenu), skip the reset: the menu
+		// draws beneath the session's screen, like running `tm` inside it, so wiping
+		// it (a bare \e[?1049l drops the scrollback on some terminals) is exactly what
+		// we must not do. app.Run resets the terminal itself if it then switches
+		// sessions or detaches.
 		defer func() {
-			if !menu {
+			if outcome != OutcomeMenu {
 				_, _ = out.Write(TerminalRestore)
 			}
 
@@ -155,17 +173,17 @@ func runRelay(
 	go r.inputLoop(in, ended, onEnd)
 
 	for {
-		next, wantMenu, serr := r.session(addrOf(id), opt, out, ended)
+		next, oc, serr := r.session(addrOf(id), opt, out, ended)
 		if serr != nil {
-			return false, serr
-		}
-
-		if wantMenu {
-			return true, nil // the menu key: app.Run opens the menu, then re-attaches
+			return OutcomeInputEnded, serr
 		}
 
 		if next == nil {
-			return false, nil // the session exited or local input ended
+			// No switch: the menu key (OutcomeMenu), the session exiting
+			// (OutcomeSessionExited), or local input ending (OutcomeInputEnded).
+			// app.Run reads the outcome to decide whether to re-open the menu over the
+			// session, fall back to the top-level menu, or leave tm.
+			return oc, nil
 		}
 
 		// Switching to another session. The session we are leaving may have left
@@ -186,14 +204,14 @@ func runRelay(
 // session runs one attachment: it dials addr, attaches, and proxies output until
 // input ends (the menu key or the local input closing), the session exits, or the
 // session asks the relay to switch. It returns a non-nil SwitchTarget only for a
-// switch; otherwise the menu bool says whether input ended on the menu key (open
-// the menu) or for any other reason (stop the relay).
+// switch; otherwise the Outcome says why it stopped (the menu key, the session
+// exiting, or local input ending).
 func (r *relay) session(
 	addr string, opt Options, out io.Writer, ended <-chan struct{},
-) (*proto.SwitchTarget, bool, error) {
+) (*proto.SwitchTarget, Outcome, error) {
 	nc, err := proto.Dial(addr)
 	if err != nil {
-		return nil, false, err
+		return nil, OutcomeInputEnded, err
 	}
 
 	defer func() { _ = nc.Close() }()
@@ -204,7 +222,7 @@ func (r *relay) session(
 
 	att := proto.Attach{Hist: opt.Hist, Lines: opt.Lines, Cols: uint16(cols), Rows: uint16(rows)}
 	if err := c.Write(proto.MsgAttach, att.Encode()); err != nil {
-		return nil, false, err
+		return nil, OutcomeInputEnded, err
 	}
 
 	r.setConn(c)
@@ -219,14 +237,24 @@ func (r *relay) session(
 	case <-ended:
 		// Input ended: either the user pressed the menu key (r.menu set) or the
 		// local input closed. Either way tell the daemon to drop us — the session
-		// keeps running — and stop this attachment. The menu bool tells the caller
+		// keeps running — and stop this attachment. The Outcome tells the caller
 		// whether to open the menu or leave tm.
 		_ = c.Write(proto.MsgDetach, nil)
 
-		return nil, r.menu.Load(), nil
+		if r.menu.Load() {
+			return nil, OutcomeMenu, nil
+		}
+
+		return nil, OutcomeInputEnded, nil
 	case t := <-target:
-		// nil: the session exited (stop). non-nil: switch to another session.
-		return t, false, nil
+		// non-nil: switch to another session (the Outcome is unused by the caller).
+		// nil: the session's shell exited or its daemon dropped the relay — the
+		// session is gone, so app.Run falls back to the top-level menu.
+		if t != nil {
+			return t, OutcomeInputEnded, nil
+		}
+
+		return nil, OutcomeSessionExited, nil
 	}
 }
 

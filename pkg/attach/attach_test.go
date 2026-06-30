@@ -19,8 +19,8 @@ import (
 // relayExit captures runRelay's two return values so a test goroutine can hand
 // both back over one channel.
 type relayExit struct {
-	menu bool
-	err  error
+	outcome Outcome
+	err     error
 }
 
 // safeBuf is a goroutine-safe accumulator for the relay's output.
@@ -111,9 +111,9 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	done := make(chan relayExit, 1)
 
 	go func() {
-		menu, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+		oc, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
 			func(string) string { return addr }, "x")
-		done <- relayExit{menu: menu, err: rerr}
+		done <- relayExit{outcome: oc, err: rerr}
 	}()
 
 	// Input is forwarded and echoed back as output.
@@ -128,7 +128,7 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	select {
 	case res := <-done:
 		g.E(res.err)
-		g.True(res.menu) // the menu key asks the caller to open the menu
+		g.Eq(res.outcome, OutcomeMenu) // the menu key asks the caller to open the menu
 	case <-time.After(5 * time.Second):
 		g.Logf("relay did not return after menu key")
 		g.FailNow()
@@ -136,6 +136,68 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 
 	g.True(detached())
 	g.False(bytes.Contains([]byte(out.String()), []byte{DefaultMenuKey}))
+}
+
+// exitServer accepts one connection, consumes the Attach, then tells the relay
+// the session's shell exited (MsgExit) and closes. It mimics a daemon whose shell
+// ended: the relay should report OutcomeSessionExited so app.Run drops back to
+// the top-level menu instead of leaving tm.
+func exitServer(g got.G, addr string) {
+	ln, err := proto.Listen(addr)
+	g.E(err)
+	g.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+
+		c := proto.NewConn(conn)
+		if mt, _, rerr := c.Read(); rerr != nil || mt != proto.MsgAttach {
+			return
+		}
+
+		_ = c.Write(proto.MsgExit, proto.EncodeExit(0))
+	}()
+}
+
+// TestRelayReturnsToMenuOnSessionExit proves that when the session's shell exits
+// (the daemon sends MsgExit), the relay stops with OutcomeSessionExited so the
+// caller returns to the menu rather than treating it like a closed input pipe.
+func TestRelayReturnsToMenuOnSessionExit(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(10 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmexit")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+
+	addr := filepath.Join(rt, "s.sock")
+
+	exitServer(g, addr)
+
+	// The write end is never closed: input stays open so the only thing that ends
+	// the relay is the session's MsgExit, not a closed pipe.
+	inR, _ := io.Pipe()
+	out := &safeBuf{}
+
+	done := make(chan relayExit, 1)
+
+	go func() {
+		oc, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+			func(string) string { return addr }, "x")
+		done <- relayExit{outcome: oc, err: rerr}
+	}()
+
+	select {
+	case res := <-done:
+		g.E(res.err)
+		g.Eq(res.outcome, OutcomeSessionExited)
+	case <-time.After(5 * time.Second):
+		g.Logf("relay did not return after the session exited")
+		g.FailNow()
+	}
 }
 
 // switchServer accepts one connection, consumes the Attach, then asks the relay
@@ -187,7 +249,7 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 	done := make(chan relayExit, 1)
 
 	go func() {
-		menu, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+		oc, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
 			func(id string) string {
 				if id == "s2" {
 					return addr2
@@ -195,7 +257,7 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 
 				return addr1
 			}, "s1")
-		done <- relayExit{menu: menu, err: rerr}
+		done <- relayExit{outcome: oc, err: rerr}
 	}()
 
 	// Once the relay has re-attached to the target, its output must carry the
