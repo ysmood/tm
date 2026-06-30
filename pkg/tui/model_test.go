@@ -304,3 +304,21 @@ func TestModelWithNamespace(t *testing.T) {
 	g.Has(v, "work-sess")
 	g.True(!strings.Contains(v, "def-sess"))
 }
+
+// Reopening the menu framed inside a session (Ctrl-\, via WithCurrentSession)
+// adopts that session's namespace, so the header keeps showing it instead of
+// reverting to default — the top-level tm process has no TM_NAMESPACE of its own.
+func TestModelWithCurrentSessionAdoptsNamespace(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "w1", Name: "work-sess", Namespace: "work"}))
+
+	m := New(st, fakeCtrl{})
+	g.Eq(m.ns, store.DefaultNamespace) // a plain top-level menu starts in default
+
+	m = m.WithCurrentSession("w1", "work-sess")
+	g.Eq(m.ns, "work")
+
+	m = send(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	g.Has(m.headerTitle(), "work") // the namespace shown in the header follows the session
+}

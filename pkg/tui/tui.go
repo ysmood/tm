@@ -416,6 +416,15 @@ func (m Model) WithNamespace(ns string) Model {
 func (m Model) WithCurrentSession(id, name string) Model {
 	m.curSessionID = id
 	m.curSession = name
+
+	// Frame the menu in the current session's namespace too, not just by name. A
+	// menu reopened over a session (Ctrl-\) runs in a top-level tm process with no
+	// TM_NAMESPACE of its own, so without this it would revert to the default
+	// namespace even when the session lives in another one.
+	if s, err := m.st.GetSession(id); err == nil && s.Namespace != "" {
+		m.ns = s.Namespace
+	}
+
 	m.showMenu() // rebuild the list so the current session drops out of it
 
 	return m
