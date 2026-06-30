@@ -12,20 +12,21 @@ import (
 
 func TestGenerateFromGitRepo(t *testing.T) {
 	g := got.T(t)
-	root := t.TempDir()
-	g.E(os.MkdirAll(filepath.Join(root, "myrepo", ".git"), 0o700))
-	deep := filepath.Join(root, "myrepo", "pkg", "deep")
+	repo := filepath.Join(t.TempDir(), "group", "myrepo")
+	g.E(os.MkdirAll(filepath.Join(repo, ".git"), 0o700))
+	deep := filepath.Join(repo, "pkg", "deep")
 	g.E(os.MkdirAll(deep, 0o700))
 
-	g.Eq(naming.Generate(deep, time.Unix(0, 0)), "myrepo")
+	// The repo's last two path elements, not just its base name.
+	g.Eq(naming.Generate(deep, time.Unix(0, 0)), "group/myrepo")
 }
 
 func TestGenerateFromCwd(t *testing.T) {
 	g := got.T(t)
-	dir := filepath.Join(t.TempDir(), "project-x")
+	dir := filepath.Join(t.TempDir(), "group", "project-x")
 	g.E(os.MkdirAll(dir, 0o700))
 
-	g.Eq(naming.Generate(dir, time.Unix(0, 0)), "project-x")
+	g.Eq(naming.Generate(dir, time.Unix(0, 0)), "group/project-x")
 }
 
 func TestGenerateFromTime(t *testing.T) {

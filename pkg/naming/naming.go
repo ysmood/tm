@@ -10,20 +10,35 @@ import (
 )
 
 // Generate returns a default session name for cwd. It prefers the enclosing git
-// repository's directory name, then cwd's base name, and finally a timestamp.
+// repository's path, then cwd, and finally a timestamp. Directory-derived names
+// keep the last two path elements (e.g. "/a/b/c/d" -> "c/d") so sibling repos
+// checked out under different parents stay distinguishable.
 func Generate(cwd string, now time.Time) string {
 	if root, ok := gitRoot(cwd); ok {
-		return filepath.Base(root)
+		return lastTwo(root)
 	}
 
 	if cwd != "" {
 		base := filepath.Base(cwd)
 		if base != "." && base != string(filepath.Separator) && base != "" {
-			return base
+			return lastTwo(cwd)
 		}
 	}
 
 	return now.Format("2006-01-02-150405")
+}
+
+// lastTwo returns the final two elements of path joined ("/a/b/c/d" -> "c/d"), or
+// just the final element when the path has only one ("/a" -> "a").
+func lastTwo(path string) string {
+	base := filepath.Base(path)
+	parent := filepath.Base(filepath.Dir(path))
+
+	if parent == "." || parent == string(filepath.Separator) {
+		return base
+	}
+
+	return filepath.Join(parent, base)
 }
 
 // Unique returns base if it is free, otherwise base with the smallest "-N"

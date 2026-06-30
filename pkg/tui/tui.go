@@ -338,12 +338,6 @@ func (m *Model) showNamespaces(p pickPurpose) {
 	}
 }
 
-// spawnedMsg is delivered when a new session's daemon has started.
-type spawnedMsg struct {
-	id  string
-	err error
-}
-
 // Update satisfies tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -351,15 +345,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setWidth(msg.Width)
 
 		return m, nil
-	case spawnedMsg:
-		if msg.err != nil {
-			m.status = "failed to start session: " + msg.err.Error()
-			m.showMenu()
-
-			return m, nil
-		}
-
-		return m.attach(msg.id, proto.HistNone, 0)
 	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" {
 			m.quit = true
@@ -613,15 +598,18 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		ns := m.targetNamespace()
-		m.showMenu()
-		m.status = "starting session…"
+		// Spawn synchronously and attach in the same step, so the menu tears down
+		// straight from the name prompt to the new session — no intermediate frame.
+		// Bubble Tea is mid-update here, so it never repaints the menu in between.
+		id, err := m.ctrl.CreateAndSpawn(m.targetNamespace(), val)
+		if err != nil {
+			m.status = "failed to start session: " + err.Error()
+			m.showMenu()
 
-		return m, func() tea.Msg {
-			id, err := m.ctrl.CreateAndSpawn(ns, val)
-
-			return spawnedMsg{id: id, err: err}
+			return m, nil
 		}
+
+		return m.attach(id, proto.HistNone, 0)
 	case inputCustomLines:
 		n, err := strconv.Atoi(val)
 		if err != nil || n <= 0 {

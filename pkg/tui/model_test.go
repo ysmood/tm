@@ -162,6 +162,27 @@ func TestModelNotInSessionAttaches(t *testing.T) {
 	g.Eq(res.Hist, proto.HistAll)
 }
 
+// Creating a new session spawns it and attaches in one step: the menu quits
+// straight from the name prompt with no intermediate "starting…" frame.
+func TestModelNewSessionAttachesImmediately(t *testing.T) {
+	g := got.T(t)
+	m := New(newStore(g, t), fakeCtrl{})
+
+	m = send(m, keyEnterMsg) // empty store: cursor sits on [new session] -> name prompt
+	g.Eq(m.mode, modeInput)
+
+	next, cmd := m.Update(keyEnterMsg) // submit the default name
+	final := next.(Model)
+
+	g.True(final.quit)
+	g.NotNil(cmd)
+
+	res := final.Result()
+	g.Eq(res.Action, ActionAttach)
+	g.Eq(res.ID, "id") // fakeCtrl.CreateAndSpawn
+	g.Eq(res.Hist, proto.HistNone)
+}
+
 // Selecting [detach session] quits tm via ActionDetach (sessions keep running in
 // the background). The dedicated action lets a menu opened mid-session with Ctrl-\
 // tell "detach to my shell" apart from a plain esc, which resumes the session.
