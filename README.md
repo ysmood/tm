@@ -2,6 +2,12 @@
 
 A light weight terminal multiplexer manager. It allows you to use each session just like a normal shell. Unlike tmux or screen, no need to use complex key-bindings to scroll through panes or windows. It's designed to be simple and easy to use for modern terminal applications.
 
+## Installation
+
+```bash
+go install github.com/ysmood/tm@latest
+```
+
 ## Usage
 
 Its cli is by design without any arguments, so you can just type `tm` and hit enter.
