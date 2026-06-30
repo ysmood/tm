@@ -628,7 +628,14 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		return m.attach(id, proto.HistNone, 0)
+		// Replay history (HistAll, not HistNone) so the shell's first prompt shows
+		// up. The daemon reports ready as soon as the shell starts, which can be
+		// after it has already printed its prompt into scrollback — common on Linux,
+		// rare on macOS — so without a replay the prompt is captured but never sent
+		// and the new session opens to a blank screen until the user presses Enter.
+		// A brand-new session's "all history" is just that prompt, so this replays
+		// nothing more.
+		return m.attach(id, proto.HistAll, 0)
 	case inputCustomLines:
 		n, err := strconv.Atoi(val)
 		if err != nil || n <= 0 {

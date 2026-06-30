@@ -180,7 +180,9 @@ func TestModelNewSessionAttachesImmediately(t *testing.T) {
 	res := final.Result()
 	g.Eq(res.Action, ActionAttach)
 	g.Eq(res.ID, "id") // fakeCtrl.CreateAndSpawn
-	g.Eq(res.Hist, proto.HistNone)
+	// HistAll, not HistNone: replay history so the shell's first prompt is shown
+	// even when the daemon already printed it before the relay attached.
+	g.Eq(res.Hist, proto.HistAll)
 }
 
 // Selecting [detach session] quits tm via ActionDetach (sessions keep running in

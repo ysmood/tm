@@ -134,7 +134,9 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 		g.FailNow()
 	}
 
-	g.True(detached())
+	// The relay returning OutcomeMenu only means it wrote the Detach; the echo
+	// server reads it off the socket asynchronously, so wait rather than racing it.
+	g.True(waitFor(detached, 5*time.Second))
 	g.False(bytes.Contains([]byte(out.String()), []byte{DefaultMenuKey}))
 }
 
