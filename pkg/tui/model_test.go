@@ -287,3 +287,20 @@ func TestModelDropNamespace(t *testing.T) {
 	g.E(err)
 	g.Eq(s1.Namespace, store.DefaultNamespace)
 }
+
+// WithNamespace (backing the TM_NAMESPACE env var) opens the menu filtered to the
+// given namespace: only its sessions are listed, not the default's.
+func TestModelWithNamespace(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "w1", Name: "work-sess", Namespace: "work"}))
+	g.E(st.SaveSession(store.Session{ID: "d1", Name: "def-sess", Namespace: store.DefaultNamespace}))
+
+	m := New(st, fakeCtrl{}).WithNamespace("work")
+	g.Eq(m.ns, "work")
+
+	m = send(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	v := m.View().Content
+	g.Has(v, "work-sess")
+	g.True(!strings.Contains(v, "def-sess"))
+}

@@ -397,6 +397,16 @@ func (m Model) WithStatus(s string) Model {
 	return m
 }
 
+// WithNamespace opens the menu filtered to ns instead of the default namespace,
+// backing the TM_NAMESPACE env var. New sessions created from the menu then land
+// in ns (see targetNamespace).
+func (m Model) WithNamespace(ns string) Model {
+	m.ns = ns
+	m.showMenu() // rebuild the list so it shows ns's sessions
+
+	return m
+}
+
 // WithCurrentSession frames the menu as running inside the given session even
 // when this tm was not launched from that session's shell. app.Run uses it when
 // Ctrl-\ reopens the menu from the relay: that process has no $TM_SESSION, so the

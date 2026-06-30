@@ -70,6 +70,10 @@ in one step.
 
 If you want to see all sessions, you can switch to the `*` namespace.
 
+Set the `TM_NAMESPACE` environment variable to choose the namespace tm opens in
+(instead of `default`); new sessions you create then land in it. For example,
+`TM_NAMESPACE=work tm` starts in the `work` namespace.
+
 ### Drop namespace
 
 The command is `[drop namespace]`. You just type words like `drop`, `dn`, `[d`, etc. and hit enter.

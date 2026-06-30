@@ -14,6 +14,11 @@ const EnvHome = "TM_HOME"
 // a session can tell which session it is running in.
 const EnvSession = "TM_SESSION"
 
+// EnvNamespace sets the namespace tm opens in. When set, the menu starts filtered
+// to this namespace and new sessions land in it, instead of the default; unset or
+// empty falls back to the default namespace.
+const EnvNamespace = "TM_NAMESPACE"
+
 // Paths holds the resolved storage locations. Home holds persistent data
 // (session metadata, logs); Runtime holds transient unix sockets and is kept
 // short on purpose, since socket paths have a ~104-byte OS limit. Runtime is

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -341,6 +342,10 @@ func showMenu(st *store.Store, ctrl *controller, status, curID, curName string) 
 	_ = st.Prune(sessionLive)
 
 	m := tui.New(st, ctrl)
+	if ns := strings.TrimSpace(os.Getenv(config.EnvNamespace)); ns != "" {
+		m = m.WithNamespace(ns)
+	}
+
 	if curID != "" {
 		m = m.WithCurrentSession(curID, curName)
 	}

@@ -302,15 +302,17 @@ func (d *Daemon) shutdown(code int) {
 }
 
 // sessionEnv returns the environment for the session's shell: the daemon's
-// environment with TERM ensured and config.EnvSession set to the session id, so a
-// tm launched inside the session knows which session it is in. Any EnvSession
-// inherited from an outer session is dropped, so a nested session reports itself.
+// environment with TERM ensured, config.EnvSession set to the session id and
+// config.EnvNamespace set to the session's namespace, so a tm launched inside the
+// session knows which session and namespace it is in. Any EnvSession/EnvNamespace
+// inherited from an outer session is dropped and replaced, so a nested session
+// reports its own identity and namespace rather than a stale inherited one.
 func sessionEnv(sess store.Session) []string {
-	out := make([]string, 0, len(os.Environ())+2)
+	out := make([]string, 0, len(os.Environ())+3)
 	hasTerm := false
 
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, config.EnvSession+"=") {
+		if strings.HasPrefix(e, config.EnvSession+"=") || strings.HasPrefix(e, config.EnvNamespace+"=") {
 			continue // replaced below so nesting reports the innermost session
 		}
 
@@ -325,5 +327,10 @@ func sessionEnv(sess store.Session) []string {
 		out = append(out, "TERM=xterm-256color")
 	}
 
-	return append(out, config.EnvSession+"="+sess.ID)
+	out = append(out, config.EnvSession+"="+sess.ID)
+	if sess.Namespace != "" {
+		out = append(out, config.EnvNamespace+"="+sess.Namespace)
+	}
+
+	return out
 }
