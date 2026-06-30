@@ -9,11 +9,13 @@ import (
 )
 
 // pickerItem is one selectable row. text overrides the fuzzy-match target (it
-// defaults to label). payload carries whatever the caller needs when the row is
-// chosen.
+// defaults to label). isCmd marks a bracketed command action (rather than a
+// session or namespace name) so the delegate colors it apart. payload carries
+// whatever the caller needs when the row is chosen.
 type pickerItem struct {
 	label   string
 	text    string
+	isCmd   bool
 	payload any
 }
 
@@ -37,8 +39,9 @@ func (a listAdapter) FilterValue() string { return a.matchText() }
 const cursorGlyph = "●"
 
 // pickerDelegate renders one row: the cursor glyph plus the label when selected,
-// a plain white indented label otherwise. Commands ([bracketed]) read apart from
-// sessions by their brackets alone, so every unselected row shares one color.
+// an indented label otherwise — bracketed command rows in the command color and
+// names (sessions, namespaces) in the plain name color, so the two read apart by
+// color as well as by their brackets.
 type pickerDelegate struct{}
 
 func (pickerDelegate) Height() int                         { return 1 }
@@ -57,7 +60,12 @@ func (pickerDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		return
 	}
 
-	_, _ = io.WriteString(w, "  "+styles().item.Render(a.label))
+	style := styles().item
+	if a.isCmd {
+		style = styles().cmd
+	}
+
+	_, _ = io.WriteString(w, "  "+style.Render(a.label))
 }
 
 // pickerAction is what a key press resolved to.
@@ -78,6 +86,10 @@ type picker struct {
 	input textarea.Model
 	all   []pickerItem
 	width int
+	// extra, when set, contributes query-dependent rows appended after the ranked
+	// matches and recomputed on every keystroke, so they track the typed text. It
+	// backs the [use namespace] picker's "create <query>" row.
+	extra func(query string) []pickerItem
 }
 
 func newPicker() picker {
@@ -100,10 +112,19 @@ func newPicker() picker {
 	return picker{list: l, input: in, width: 80}
 }
 
-// setItems replaces the full item set and clears the query.
+// setItems replaces the full item set, clears the query and drops any extra-row
+// hook from a previous menu.
 func (p *picker) setItems(items []pickerItem) {
 	p.all = items
+	p.extra = nil
 	p.input.SetValue("")
+	p.refilter()
+}
+
+// setExtra installs a hook that contributes query-dependent rows after the
+// ranked matches (see picker.extra). Call it after setItems.
+func (p *picker) setExtra(fn func(query string) []pickerItem) {
+	p.extra = fn
 	p.refilter()
 }
 
@@ -126,11 +147,18 @@ func (p *picker) applySize() {
 
 // refilter recomputes the visible rows from the current query.
 func (p *picker) refilter() {
-	order := rankItems(p.all, p.input.Value())
-	items := make([]list.Item, len(order))
+	query := p.input.Value()
+	order := rankItems(p.all, query)
+	items := make([]list.Item, 0, len(order)+1)
 
-	for i, idx := range order {
-		items[i] = listAdapter{p.all[idx]}
+	for _, idx := range order {
+		items = append(items, listAdapter{p.all[idx]})
+	}
+
+	if p.extra != nil {
+		for _, it := range p.extra(query) {
+			items = append(items, listAdapter{it})
+		}
 	}
 
 	p.list.SetItems(items)

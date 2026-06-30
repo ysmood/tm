@@ -7,8 +7,8 @@ import (
 // rankItems returns the indices of items matching query, best match first. An
 // empty query keeps the original order. Every item — the fixed [bracketed]
 // commands and the sessions alike — is fuzzy-matched on its text, so typing a
-// few characters in any order narrows the list the same way everywhere: "[n"
-// surfaces [new session] and [new namespace], "ds" surfaces [detach session].
+// few characters in any order narrows the list the same way everywhere: "ns"
+// surfaces [new session], "ds" surfaces [detach session].
 func rankItems(items []pickerItem, query string) []int {
 	if query == "" {
 		idx := make([]int, len(items))

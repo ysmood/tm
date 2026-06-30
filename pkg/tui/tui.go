@@ -7,11 +7,12 @@
 // Every menu — the main list, the scrollback chooser, the namespace chooser —
 // is the same type-to-filter picker (see picker.go), so they share keys and
 // behavior. All text entry — the picker's filter and the free-text prompts
-// (naming a session or namespace, a custom line count) — is a single-line
-// textarea built by newInput.
+// (naming a session, a custom line count) — is a single-line textarea built by
+// newInput.
 package tui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,7 +81,6 @@ type cmdID int
 const (
 	cmdNewSession cmdID = iota
 	cmdDetachSession
-	cmdNewNamespace
 	cmdUseNamespace
 	cmdDropNamespace
 	cmdHelp
@@ -93,11 +93,10 @@ type paletteCmd struct {
 
 // palette holds the fixed commands. The bracketed labels are fuzzy-matched like
 // everything else (see rankItems), so typing the letters of a command in order
-// surfaces it — "ds" finds [detach session], "[n" the two [new …] commands.
+// surfaces it — "ds" finds [detach session], "un" finds [use namespace].
 var palette = []paletteCmd{
 	{cmdNewSession, "[new session]"},
 	{cmdDetachSession, "[detach session]"},
-	{cmdNewNamespace, "[new namespace]"},
 	{cmdUseNamespace, "[use namespace]"},
 	{cmdDropNamespace, "[drop namespace]"},
 	{cmdHelp, "[help]"},
@@ -110,6 +109,12 @@ type menuPayload struct {
 	cmdID cmdID
 	sess  store.Session
 }
+
+// newNamespacePayload is the [use namespace] picker's "create" row: choosing it
+// makes the typed namespace and switches to it. It folds what was a separate
+// [new namespace] command into [use namespace] — typing a name no namespace has
+// yet surfaces this row (see showNamespaces).
+type newNamespacePayload struct{ name string }
 
 // scrollbackPayload is the data attached to a scrollback-chooser row.
 type scrollbackPayload struct {
@@ -140,7 +145,6 @@ type inputPurpose int
 
 const (
 	inputNewSession inputPurpose = iota
-	inputNewNamespace
 	inputCustomLines
 )
 
@@ -266,6 +270,7 @@ func (m *Model) menuItems() []pickerItem {
 	for _, c := range palette {
 		items = append(items, pickerItem{
 			label:   c.label,
+			isCmd:   true,
 			payload: menuPayload{isCmd: true, cmdID: c.id},
 		})
 	}
@@ -312,6 +317,25 @@ func (m *Model) showNamespaces(p pickPurpose) {
 	}
 
 	m.pick.setItems(items)
+
+	// [use namespace] also creates: typing a name no namespace has yet surfaces a
+	// row that makes it and switches to it, so there is no separate [new namespace]
+	// command. The row tracks the query, so it disappears once the name matches an
+	// existing namespace exactly.
+	if p == pickUseNamespace {
+		m.pick.setExtra(func(q string) []pickerItem {
+			q = strings.TrimSpace(q)
+			if q == "" || slices.Contains(names, q) {
+				return nil
+			}
+
+			return []pickerItem{{
+				label:   "[new namespace] " + q,
+				isCmd:   true,
+				payload: newNamespacePayload{name: q},
+			}}
+		})
+	}
 }
 
 // spawnedMsg is delivered when a new session's daemon has started.
@@ -450,9 +474,12 @@ func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
 			return m.selectScrollback(p)
 		}
 	case pickUseNamespace:
-		if ns, ok := it.payload.(string); ok {
-			m.ns = ns
-			m.status = "namespace: " + ns
+		switch pl := it.payload.(type) {
+		case newNamespacePayload:
+			return m.createNamespace(pl.name)
+		case string:
+			m.ns = pl
+			m.status = "namespace: " + pl
 			m.showMenu()
 		}
 	case pickDropNamespace:
@@ -485,8 +512,6 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 		m.quit = true
 
 		return m, tea.Quit
-	case cmdNewNamespace:
-		m.enterInput(inputNewNamespace, "New namespace name:", "")
 	case cmdUseNamespace:
 		m.showNamespaces(pickUseNamespace)
 	case cmdDropNamespace:
@@ -509,6 +534,22 @@ func (m Model) selectScrollback(p scrollbackPayload) (tea.Model, tea.Cmd) {
 	m.showMenu()
 
 	return m.attach(id, p.hist, p.lines)
+}
+
+// createNamespace makes ns and switches the active view to it. It backs the
+// [use namespace] picker's create row (choosing a typed name no namespace has
+// yet), so creating and switching are one step.
+func (m Model) createNamespace(ns string) (tea.Model, tea.Cmd) {
+	if err := m.st.CreateNamespace(ns); err != nil {
+		m.status = err.Error()
+	} else {
+		m.ns = ns
+		m.status = "namespace: " + ns
+	}
+
+	m.showMenu()
+
+	return m, nil
 }
 
 func (m Model) dropNamespace(ns string) (tea.Model, tea.Cmd) {
@@ -581,23 +622,6 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 
 			return spawnedMsg{id: id, err: err}
 		}
-	case inputNewNamespace:
-		if val == "" {
-			m.status = "name cannot be empty"
-
-			return m, nil
-		}
-
-		if err := m.st.CreateNamespace(val); err != nil {
-			m.status = err.Error()
-		} else {
-			m.ns = val
-			m.status = "namespace: " + val
-		}
-
-		m.showMenu()
-
-		return m, nil
 	case inputCustomLines:
 		n, err := strconv.Atoi(val)
 		if err != nil || n <= 0 {
@@ -779,8 +803,7 @@ func (m Model) viewHelp() string {
 		{"<session>", switchHint},
 		{"[new session]", "create and start a new session"},
 		{"[detach session]", "leave tm; every session keeps running"},
-		{"[new namespace]", "create a namespace and switch to it"},
-		{"[use namespace]", "switch the active namespace (* shows all)"},
+		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},
 		{"[drop namespace]", "delete a namespace"},
 		{"[help]", "show this help"},
 	})
@@ -789,9 +812,8 @@ func (m Model) viewHelp() string {
 		"\n" + th.dim.Render("press any key to go back")
 }
 
-// viewInput frames the active free-text prompt (naming a session or namespace, a
-// custom line count) in the same box as the menu, its header carried in the top
-// border.
+// viewInput frames the active free-text prompt (naming a session, a custom line
+// count) in the same box as the menu, its header carried in the top border.
 func (m Model) viewInput() string {
 	return m.box(m.headerTitle(), []string{m.input.View()})
 }
@@ -813,7 +835,7 @@ var styles = sync.OnceValue(func() theme {
 		title:   lipgloss.NewStyle().Bold(true),
 		dim:     lipgloss.NewStyle().Faint(true),
 		sel:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-		cmd:     lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		cmd:     lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
 		status:  lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
 		session: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),
 		item:    lipgloss.NewStyle().Foreground(lipgloss.Color("15")),

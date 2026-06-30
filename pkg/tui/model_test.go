@@ -200,17 +200,22 @@ func TestModelHelpScreen(t *testing.T) {
 	g.Eq(m.pickFor, pickMenu)
 }
 
-// Typing "nn" then a name creates and switches to a new namespace.
+// [use namespace] also creates: typing a name no namespace has yet surfaces a
+// create row that makes it and switches to it.
 func TestModelCreateNamespace(t *testing.T) {
 	g := got.T(t)
 	m := New(newStore(g, t), fakeCtrl{})
 
-	m = typeStr(m, "nn")
-	m = send(m, keyEnterMsg) // select [new namespace] -> input mode
-	g.Eq(m.mode, modeInput)
+	m = typeStr(m, "un")
+	m = send(m, keyEnterMsg) // select [use namespace] -> namespace picker
+	g.Eq(m.pickFor, pickUseNamespace)
 
+	// "work" matches no existing namespace, so the only row is "[new namespace]
+	// work"; select it to create and switch.
 	m = typeStr(m, "work")
-	m = send(m, keyEnterMsg) // submit
+	g.Has(m.View().Content, "[new namespace] work")
+
+	m = send(m, keyEnterMsg)
 	g.Eq(m.ns, "work")
 
 	names, err := m.st.ListNamespaces()

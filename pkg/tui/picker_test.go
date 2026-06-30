@@ -37,7 +37,7 @@ func TestPickerTypeToFilter(t *testing.T) {
 	g.Eq(typed.pick.input.Value(), "web") // query captured by the textarea
 	filtered := typed.View().Content
 	g.Has(filtered, "webserver")
-	g.True(!strings.Contains(filtered, "[new namespace]"))
+	g.True(!strings.Contains(filtered, "[use namespace]"))
 
 	// A query that matches nothing shows the empty state.
 	g.Has(typeStr(m, "zzzz").View().Content, "No matches")

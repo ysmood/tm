@@ -32,7 +32,6 @@ func TestPaletteFuzzyRanksCorrectly(t *testing.T) {
 	}
 
 	check("ds", cmdDetachSession)
-	check("nn", cmdNewNamespace)
 	check("un", cmdUseNamespace)
 	check("dn", cmdDropNamespace)
 	check("detach", cmdDetachSession)
@@ -40,12 +39,13 @@ func TestPaletteFuzzyRanksCorrectly(t *testing.T) {
 }
 
 // Random in-order characters filter the palette like any other fuzzy field, with
-// no per-command aliases: "[n" matches both [new session] and [new namespace].
+// no per-command aliases: "session" matches both [new session] and [detach
+// session].
 func TestPaletteFuzzyMatchesMultiple(t *testing.T) {
 	g := got.T(t)
 	items := paletteItems()
 
-	order := rankItems(items, "[n")
+	order := rankItems(items, "session")
 	matched := make([]cmdID, 0, len(order))
 
 	for _, idx := range order {
@@ -53,7 +53,7 @@ func TestPaletteFuzzyMatchesMultiple(t *testing.T) {
 	}
 
 	g.True(slices.Contains(matched, cmdNewSession))
-	g.True(slices.Contains(matched, cmdNewNamespace))
+	g.True(slices.Contains(matched, cmdDetachSession))
 }
 
 func TestFilterEmptyQueryKeepsOrder(t *testing.T) {

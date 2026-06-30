@@ -59,16 +59,14 @@ still running in the background — choose the `[detach session]` command from t
 menu. You just type words like `detach`, `ds`, `[d`, `[ds`, etc. and hit enter.
 Run `tm` again to pick a session back up.
 
-### New namespace
-
-The command is `[new namespace]`. You just type words like `namespace`, `nn`, `[n`, etc. and hit enter.
-
-Namespace is a way to group sessions together. When you enter tm, it will use a namespace called `default`.
-You will only see sessions under your current namespace. You can create a new namespace and switch to it.
-
 ### Use namespace
 
 The command is `[use namespace]`. You just type words like `namespace`, `un`, `[n`, etc. and hit enter.
+
+A namespace is a way to group sessions together. When you enter tm, it uses a namespace called `default`,
+and you only see sessions under your current namespace. Pick a namespace from the list to switch to it,
+or type a name that doesn't exist yet and choose `[new namespace] <name>` to create it and switch to it
+in one step.
 
 If you want to see all sessions, you can switch to the `*` namespace.
 
