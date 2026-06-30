@@ -5,6 +5,7 @@
     "charmbracelet",
     "gopty",
     "lipgloss",
+    "ptys",
     "reparents",
     "sess",
     "tminline",

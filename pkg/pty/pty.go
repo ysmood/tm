@@ -38,6 +38,18 @@ func Start(name string, args, env []string, dir string, cols, rows int) (*PTY, e
 		return nil, err
 	}
 
+	// On Linux a read on the PTY master only reports EOF once the LAST slave fd is
+	// closed. go-pty keeps a slave fd open in this (parent) process, so without
+	// closing our copy the daemon's read loop blocks forever after the child shell
+	// exits — it only works on macOS, whose ptys hang up the line when the
+	// controlling process exits regardless of lingering slave fds. The child holds
+	// its own dup'd fd (so it is unaffected) and Resize operates on the master, so
+	// closing the parent's slave here is safe and lets the master read return once
+	// the shell exits. On Windows p is a ConPty, so the assertion is skipped.
+	if u, ok := p.(gopty.UnixPty); ok {
+		_ = u.Slave().Close()
+	}
+
 	return &PTY{pty: p, cmd: c}, nil
 }
 
