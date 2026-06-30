@@ -774,7 +774,7 @@ func (m Model) viewHelp() string {
 	}
 
 	section("Keys", [][2]string{
-		{"↑/↓, Ctrl-P/N", "move the cursor"},
+		{"↑/↓", "move the cursor (also Ctrl-P/N or Ctrl-K/J)"},
 		{"type", "fuzzy-filter the list"},
 		{"enter", "select the highlighted row"},
 		{"esc", "back, or quit from the main menu (sessions keep running)"},
