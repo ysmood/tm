@@ -45,7 +45,7 @@ func SpawnWith(exe string, p config.Paths, sess store.Session) error {
 
 	cmd := exec.Command(exe, "__daemon", "--id", sess.ID)
 
-	cmd.Env = os.Environ() // inherit TM_HOME / XDG_RUNTIME_DIR so paths agree
+	cmd.Env = os.Environ() // inherit TM_HOME / TM_RUNTIME so paths agree
 
 	if dirExists(sess.Cwd) {
 		cmd.Dir = sess.Cwd

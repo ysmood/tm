@@ -19,6 +19,14 @@ const EnvSession = "TM_SESSION"
 // empty falls back to the default namespace.
 const EnvNamespace = "TM_NAMESPACE"
 
+// EnvRuntime overrides the directory holding tm's per-session unix sockets (unix
+// only). It defaults to /tmp/tm-<uid>; set it to relocate the sockets, e.g. onto a
+// per-user runtime tmpfs. It must resolve to the same path for every tm that talks
+// to a session — the daemon that spawns listens there and later attaches dial it —
+// so pin it in a shared profile, not per-connection. tm intentionally does not fall
+// back to $XDG_RUNTIME_DIR; see defaultRuntime.
+const EnvRuntime = "TM_RUNTIME"
+
 // Paths holds the resolved storage locations. Home holds persistent data
 // (session metadata, logs); Runtime holds transient unix sockets and is kept
 // short on purpose, since socket paths have a ~104-byte OS limit. Runtime is

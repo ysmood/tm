@@ -31,7 +31,7 @@ func TestCtrlBackslashEscPreservesPrompt(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)

@@ -59,7 +59,7 @@ func TestMenuRendersUnderPTY(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 
 	bin := buildTM(g, t)
 
@@ -97,7 +97,7 @@ func TestRelaySwitchesSessions(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
@@ -170,7 +170,7 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
@@ -290,7 +290,7 @@ func TestMenuKeyOpensInline(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
@@ -379,7 +379,7 @@ func TestSessionExitReturnsToMenu(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
@@ -473,7 +473,7 @@ func TestMenuKeyResumeDoesNotReplay(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
@@ -633,7 +633,7 @@ func TestRelayUnderPTY(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
@@ -686,7 +686,7 @@ func TestMenuCreateAttachDetach(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
@@ -744,7 +744,7 @@ func TestMenuReattachCycle(t *testing.T) {
 	g.E(err)
 	g.Cleanup(func() { _ = os.RemoveAll(rt) })
 	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("XDG_RUNTIME_DIR", rt)
+	g.Setenv("TM_RUNTIME", rt)
 	killLeftoverDaemons(g)
 
 	bin := buildTM(g, t)
