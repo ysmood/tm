@@ -238,12 +238,12 @@ func runMenu(st *store.Store, ctrl *controller) error {
 
 		// Switching to a different session: the relay left this session's screen up
 		// so the menu could open inline over it, so reset the terminal (leave the
-		// alternate screen, mouse modes, scroll region, …) before the target's
-		// history replays. Resuming the same session keeps the screen as-is (that is
-		// the point of the inline menu), and the first attach from a clean shell has
-		// nothing to undo.
+		// alternate screen, mouse modes, scroll region, …) and return to column 0
+		// before the target's history replays, so the replay lands from a known
+		// column. Resuming the same session keeps the screen as-is (that is the point
+		// of the inline menu), and the first attach from a clean shell has nothing to undo.
 		if curID != "" && targetID != curID {
-			_, _ = os.Stdout.Write(attach.TerminalRestore)
+			_, _ = os.Stdout.Write(attach.SwitchReset)
 		}
 
 		outcome, alt, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines})

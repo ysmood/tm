@@ -54,7 +54,12 @@ const (
 		"\x1b[?2004l" + // disable bracketed paste
 		"\x1b[?7h" + // re-enable auto-wrap (DECAWM)
 		"\x1b[?1l\x1b>" + // normal cursor keys (DECCKM) and keypad (DECKPNM)
-		"\x1b[r" + // reset the scroll region to the full screen (DECSTBM)
+		// Reset the scroll region to the full screen (DECSTBM). DECSTBM homes the
+		// cursor as a side effect, so wrap it in save/restore-cursor (DECSC/DECRC):
+		// otherwise, when the shell exits and app.Run reopens the inline menu, the
+		// menu would render from the homed cursor at the top and erase the screen
+		// below it — wiping the just-exited session's output and the scrollback view.
+		"\x1b7\x1b[r\x1b8" +
 		"\x1b(B" + // select US-ASCII for the G0 charset
 		"\x1b[?25h" + // show the cursor
 		"\x1b[m" // reset SGR colors / attributes
@@ -70,6 +75,19 @@ var TerminalModesReset = []byte(terminalModesReset)
 // then reset the modes. Used where the screen is redrawn next (a session switch)
 // or where a full-screen app was up when leaving.
 var TerminalRestore = []byte(altScreenExit + terminalModesReset)
+
+// SwitchReset is TerminalRestore plus a carriage return, written before re-attaching
+// to a switch target. The target's history replay is a raw byte stream with no
+// absolute positioning, so it must start from column 0 to line up with how it was
+// recorded. The reset leaves the cursor wherever the leaving session's prompt sat —
+// mid-line — so the replay would otherwise begin off-column, and a recorded partial
+// last line (e.g. zsh's prompt, whose PROMPT_SP EOL marker "%" is baked into the
+// scrollback) no longer lines up under what overwrites it, leaving a stray "%" on
+// screen. The CR only moves to column 0 of the current row — not home — so the
+// leaving session's output scrolls up into the scrollback as the target replays,
+// rather than being overwritten. The plain restores omit it, so leaving to the
+// inline menu (exit) or the launching shell (detach) renders exactly in place.
+var SwitchReset = []byte(altScreenExit + terminalModesReset + "\r")
 
 // RestoreFor returns the reset to write when leaving a session: the full restore
 // when the session left the terminal in the alternate screen, otherwise the
@@ -243,10 +261,11 @@ func runRelay(
 		// (which runs in the alternate screen), was running in it. Unlike a detach,
 		// nothing else resets the terminal here: the menu's teardown went to the
 		// old session's PTY, which we have already left, so it never reaches this
-		// terminal. Reset to baseline before re-attaching, so the next session's
-		// output (and history replay) lands on a clean screen with a visible cursor
-		// instead of inheriting the previous session's leftover modes.
-		_, _ = out.Write(TerminalRestore)
+		// terminal. Reset to baseline and return to column 0 before re-attaching, so
+		// the next session's history replay lands from a known column with a visible
+		// cursor and clean modes, instead of inheriting the previous session's leftover
+		// modes or mid-line cursor position (which leaves a stray zsh "%" on screen).
+		_, _ = out.Write(SwitchReset)
 
 		id, opt.Hist, opt.Lines = next.ID, next.Hist, next.Lines
 	}

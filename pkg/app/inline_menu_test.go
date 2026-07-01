@@ -287,6 +287,11 @@ func (v *vt) apply(params string, final byte) {
 		for j := v.cc; j < v.cols; j++ {
 			v.cur[v.cr][j] = ' '
 		}
+	case 'r':
+		// DECSTBM (set scroll region) homes the cursor to the top margin as a side
+		// effect — the very behavior that made a bare \e[r wipe the screen when the
+		// menu reopened. Model it so tests can catch a regression.
+		v.cr, v.cc = max(0, n(0, 1)-1), 0
 	}
 }
 
@@ -316,6 +321,18 @@ func (v *vt) visible() string {
 		b.WriteString("\n")
 	}
 
+	for _, row := range v.cur {
+		b.WriteString(v.line(row))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// screen returns only the on-screen rows (no scrollback), i.e. what is actually
+// visible right now — used to catch content being erased off the current screen.
+func (v *vt) screen() string {
+	var b strings.Builder
 	for _, row := range v.cur {
 		b.WriteString(v.line(row))
 		b.WriteString("\n")

@@ -25,6 +25,27 @@ func TestRestoreFor(t *testing.T) {
 	g.Eq(string(altScreen), string(TerminalRestore))
 }
 
+// TestSwitchResetReturnsToColumnZero pins the switch-vs-leave asymmetry: switching
+// to a session ends the reset with a carriage return so the target's raw history
+// replay starts from column 0 and lines up with how it was recorded (else a recorded
+// partial prompt keeps zsh's "%" EOL marker on screen). It must NOT home the cursor
+// (that would overwrite the leaving session's output instead of scrolling it into
+// the scrollback), and leaving to the inline menu or the shell omits the CR entirely
+// so the menu/prompt renders exactly in place.
+func TestSwitchResetReturnsToColumnZero(t *testing.T) {
+	g := got.T(t)
+
+	g.True(bytes.HasSuffix(SwitchReset, []byte("\r")))         // switch returns to column 0
+	g.False(bytes.Contains(SwitchReset, []byte("\x1b[H")))     // but never homes (no screen wipe)
+	g.True(bytes.Contains(SwitchReset, []byte(altScreenExit))) // and still leaves the alt screen
+
+	// Leaving to the menu / shell must not shift the cursor at all.
+	g.False(bytes.Contains(TerminalModesReset, []byte("\r")))
+	g.False(bytes.HasSuffix(TerminalRestore, []byte("\r")))
+	g.False(bytes.HasSuffix(RestoreFor(false), []byte("\r")))
+	g.False(bytes.HasSuffix(RestoreFor(true), []byte("\r")))
+}
+
 // TestTrackAltScreen feeds output chunks through the relay's tracker and checks the
 // recorded alternate-screen state — the signal that decides whether leaving the
 // session must emit rmcup.
