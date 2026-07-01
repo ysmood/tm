@@ -134,15 +134,20 @@ func TestRelaySwitchesSessions(t *testing.T) {
 	g.E(err)
 	g.Desc("relay should start on aaa: %q", buf.String()).True(waitForText(buf, "WHO=aaa", 10*time.Second))
 
-	// Ask aaa's daemon to hand the relay to bbb — what controller.Switch does.
+	// Ask aaa's daemon to hand the relay to bbb — what controller.Switch does,
+	// including the target's display name so the relay can announce the switch.
 	nc, derr := proto.Dial(proto.SockAddr(p, "aaa"))
 	g.E(derr)
 	conn := proto.NewConn(nc)
-	g.E(conn.Write(proto.MsgSwitch, proto.SwitchTarget{ID: "bbb"}.Encode()))
+	g.E(conn.Write(proto.MsgSwitch, proto.SwitchTarget{ID: "bbb", Name: "bbb"}.Encode()))
 	_, _, _ = conn.Read() // block until the daemon forwards and closes
 	_ = nc.Close()
 
 	time.Sleep(1 * time.Second) // let the relay re-attach to bbb
+	// The relay prints a notice naming the session it switched to.
+	g.Desc("switch should print a notice: %q", buf.String()).
+		True(waitForText(buf, "tm switched to session", 10*time.Second))
+
 	_, err = pt.Write([]byte("echo WHO=$TM_SESSION\r"))
 	g.E(err)
 	g.Desc("relay should have switched to bbb: %q", buf.String()).True(waitForText(buf, "WHO=bbb", 10*time.Second))
@@ -219,6 +224,10 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	send("\r") // attach with all history
 	time.Sleep(800 * time.Millisecond)
 
+	// Entering a session from the top-level menu prints a notice naming it.
+	g.Desc("entering a session should print a notice: %q", buf.String()[mark:]).
+		True(waitForTextFrom(buf, mark, "tm entered session", 10*time.Second))
+
 	send("echo WHO=$TM_SESSION\r")
 	g.Desc("should start on aaa: %q", buf.String()).True(waitForText(buf, "WHO=aaa", 10*time.Second))
 
@@ -234,6 +243,10 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	g.True(waitForTextFrom(buf, mark, "All history", 10*time.Second))
 	send("\r") // switch to bbb in place
 	time.Sleep(1*time.Second + 200*time.Millisecond)
+
+	// Switching from the in-session menu prints a notice naming the target.
+	g.Desc("Ctrl-\\ switch should print a notice: %q", buf.String()[mark:]).
+		True(waitForTextFrom(buf, mark, "tm switched to session", 10*time.Second))
 
 	send("echo WHO=$TM_SESSION\r")
 	g.Desc("Ctrl-\\ menu should have switched to bbb: %q", buf.String()).
@@ -252,11 +265,16 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	g.Desc("esc should resume bbb: %q", buf.String()).
 		True(waitForText(buf, "RESUMED=bbb", 10*time.Second))
 
+	mark = len(buf.String())
 	detachViaMenu(g, pt, buf)
 
 	// Bounded so a future regression that fails to detach fails fast instead of
 	// hanging until the test's PanicAfter; detach must leave tm for the launcher.
 	waitExit(c, 10*time.Second)
+
+	// Leaving tm for the launching shell prints a detached notice.
+	g.Desc("detach must print a notice: %q", buf.String()[mark:]).
+		True(waitForTextFrom(buf, mark, "tm detached", 10*time.Second))
 }
 
 // TestMenuKeyOpensInline proves the menu key opens the menu inline — like running
@@ -426,6 +444,10 @@ func TestSessionExitReturnsToMenu(t *testing.T) {
 
 	// Exit the shell: the session ends and tm returns to the top-level menu.
 	send("exit\r")
+
+	// The relay notes which session ended before the menu redraws.
+	g.Desc("session exit must print a notice: %q", buf.String()[mark:]).
+		True(waitFrom(mark, "tm exited session"))
 
 	g.Desc("exiting the shell must return to the tm menu: %q", buf.String()[mark:]).
 		True(waitFrom(mark, "[new session]"))

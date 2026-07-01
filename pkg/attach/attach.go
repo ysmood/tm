@@ -105,6 +105,10 @@ type Options struct {
 	Hist    proto.HistMode
 	Lines   uint32
 	MenuKey byte
+	// Name is the display name of the session first attached to, used for the
+	// status notice printed if that session's shell exits. It is empty when the
+	// name is unknown (e.g. the bare __attach relay), which suppresses the notice.
+	Name string
 }
 
 // Outcome reports why the relay stopped, so the caller (app.Run) can decide what
@@ -204,6 +208,10 @@ func runRelay(
 
 	r := &relay{menuKey: opt.MenuKey, ready: make(chan struct{})}
 
+	// curName tracks the session the relay is currently on (updated as it switches
+	// internally), so the exit notice below names the right session.
+	curName := opt.Name
+
 	if raw && term.IsTerminal(inFd) {
 		old, merr := term.MakeRaw(inFd)
 		if merr != nil {
@@ -222,6 +230,12 @@ func runRelay(
 		defer func() {
 			if outcome != OutcomeMenu {
 				_, _ = out.Write(RestoreFor(r.alt.Load()))
+			}
+
+			// The session's shell exited: note it before app.Run draws the top-level
+			// menu, so the name of the session that just ended stays in the scrollback.
+			if outcome == OutcomeSessionExited && curName != "" {
+				_, _ = out.Write(ExitedSessionNotice(curName))
 			}
 
 			_ = term.Restore(inFd, old)
@@ -267,7 +281,14 @@ func runRelay(
 		// modes or mid-line cursor position (which leaves a stray zsh "%" on screen).
 		_, _ = out.Write(SwitchReset)
 
-		id, opt.Hist, opt.Lines = next.ID, next.Hist, next.Lines
+		// Note the switch on the terminal before the target's history replays over
+		// it. Skip it when the target carries no name (e.g. an older sender), so the
+		// notice never renders an empty name.
+		if next.Name != "" {
+			_, _ = out.Write(SwitchedNotice(next.Name))
+		}
+
+		id, opt.Hist, opt.Lines, curName = next.ID, next.Hist, next.Lines, next.Name
 	}
 }
 

@@ -63,7 +63,7 @@ func (c *controller) Switch(id string, hist proto.HistMode, lines uint32) error 
 
 	conn := proto.NewConn(nc)
 
-	tgt := proto.SwitchTarget{ID: id, Hist: hist, Lines: lines}
+	tgt := proto.SwitchTarget{ID: id, Name: sessionName(c.st, id), Hist: hist, Lines: lines}
 	if err := conn.Write(proto.MsgSwitch, tgt.Encode()); err != nil {
 		return err
 	}
@@ -233,20 +233,33 @@ func runMenu(st *store.Store, ctrl *controller) error {
 
 		targetID, hist, lines, leave := pickTarget(res, curID, curAlt)
 		if leave {
+			// Left tm for the launching shell (esc at the top level, or [detach
+			// session]). pickTarget already reset the terminal when detaching from a
+			// session; note the departure so it stays in the scrollback.
+			_, _ = os.Stdout.Write(attach.DetachedNotice())
+
 			return nil
 		}
 
-		// Switching to a different session: the relay left this session's screen up
-		// so the menu could open inline over it, so reset the terminal (leave the
-		// alternate screen, mouse modes, scroll region, …) and return to column 0
-		// before the target's history replays, so the replay lands from a known
-		// column. Resuming the same session keeps the screen as-is (that is the point
-		// of the inline menu), and the first attach from a clean shell has nothing to undo.
-		if curID != "" && targetID != curID {
+		targetName := sessionName(st, targetID)
+
+		// Announce where the terminal is going. Switching to a different session: the
+		// relay left this session's screen up so the menu could open inline over it,
+		// so reset the terminal (leave the alternate screen, mouse modes, scroll
+		// region, …) and return to column 0 before the target's history replays, so
+		// the replay lands from a known column. Entering a session from the top-level
+		// menu is a fresh attach with nothing to undo. Resuming the same session
+		// (curID == targetID) keeps the screen as-is — that is the point of the inline
+		// menu — so it says nothing.
+		switch {
+		case curID != "" && targetID != curID:
 			_, _ = os.Stdout.Write(attach.SwitchReset)
+			_, _ = os.Stdout.Write(attach.SwitchedNotice(targetName))
+		case curID == "":
+			_, _ = os.Stdout.Write(attach.EnteredNotice(targetName))
 		}
 
-		outcome, alt, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines})
+		outcome, alt, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines, Name: targetName})
 		if aerr != nil {
 			// The relay couldn't reach the daemon (a dead session). Reap it so it
 			// stops reappearing in the menu — otherwise reselecting it bounces back

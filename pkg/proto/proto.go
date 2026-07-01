@@ -114,33 +114,45 @@ func DecodeResize(p []byte) (Resize, error) {
 }
 
 // SwitchTarget is the payload of MsgSwitch/MsgSwitchTo: the session to re-attach
-// to and how much of its history to replay.
+// to, its display name (for the relay's status notice), and how much of its
+// history to replay.
 type SwitchTarget struct {
 	ID    string
+	Name  string
 	Hist  HistMode
 	Lines uint32
 }
 
-// Encode serializes the SwitchTarget payload (hist, lines, then the id bytes).
+// Encode serializes the SwitchTarget payload: hist, lines, the id length, then
+// the id bytes followed by the name bytes. The id is length-prefixed so the name
+// (variable length, may be empty) can trail it.
 func (s SwitchTarget) Encode() []byte {
-	b := make([]byte, 5+len(s.ID))
+	b := make([]byte, 7+len(s.ID)+len(s.Name))
 	b[0] = byte(s.Hist)
 	binary.BigEndian.PutUint32(b[1:], s.Lines)
-	copy(b[5:], s.ID)
+	binary.BigEndian.PutUint16(b[5:], uint16(len(s.ID)))
+	n := copy(b[7:], s.ID)
+	copy(b[7+n:], s.Name)
 
 	return b
 }
 
 // DecodeSwitchTarget parses a SwitchTarget payload.
 func DecodeSwitchTarget(p []byte) (SwitchTarget, error) {
-	if len(p) < 5 {
+	if len(p) < 7 {
+		return SwitchTarget{}, fmt.Errorf("proto: short switch payload: %d", len(p))
+	}
+
+	idLen := int(binary.BigEndian.Uint16(p[5:]))
+	if len(p) < 7+idLen {
 		return SwitchTarget{}, fmt.Errorf("proto: short switch payload: %d", len(p))
 	}
 
 	return SwitchTarget{
 		Hist:  HistMode(p[0]),
 		Lines: binary.BigEndian.Uint32(p[1:]),
-		ID:    string(p[5:]),
+		ID:    string(p[7 : 7+idLen]),
+		Name:  string(p[7+idLen:]),
 	}, nil
 }
 

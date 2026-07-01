@@ -51,6 +51,22 @@ func TestExitRoundTrip(t *testing.T) {
 	g.Eq(out, int32(-7))
 }
 
+func TestSwitchTargetRoundTrip(t *testing.T) {
+	g := got.T(t)
+
+	check := func(in proto.SwitchTarget) {
+		g.Helper()
+
+		out, err := proto.DecodeSwitchTarget(in.Encode())
+		g.E(err)
+		g.Eq(out, in)
+	}
+
+	check(proto.SwitchTarget{ID: "abc123", Name: "my session", Hist: proto.HistAll, Lines: 7})
+	check(proto.SwitchTarget{ID: "abc123", Name: "", Hist: proto.HistNone, Lines: 0}) // no name
+	check(proto.SwitchTarget{ID: "", Name: "orphan", Hist: proto.HistPage, Lines: 0}) // no id
+}
+
 func TestDecodeShortPayloads(t *testing.T) {
 	g := got.T(t)
 	_, err := proto.DecodeAttach([]byte{1, 2})
@@ -58,6 +74,8 @@ func TestDecodeShortPayloads(t *testing.T) {
 	_, err = proto.DecodeResize([]byte{1})
 	g.Err(err)
 	_, err = proto.DecodeExit(nil)
+	g.Err(err)
+	_, err = proto.DecodeSwitchTarget([]byte{1, 2, 3, 4, 5}) // shorter than the 7-byte header
 	g.Err(err)
 }
 
