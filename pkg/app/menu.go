@@ -186,7 +186,7 @@ func Run() error {
 // session's still-visible output. [detach session] leaves tm with every session
 // still running, first resetting the terminal if we came from a session so the
 // launching shell gets it clean.
-func pickTarget(res tui.Result, curID string) (targetID string, hist proto.HistMode, lines uint32, leave bool) {
+func pickTarget(res tui.Result, curID string, curAlt bool) (targetID string, hist proto.HistMode, lines uint32, leave bool) {
 	switch res.Action {
 	case tui.ActionAttach, tui.ActionSwitch:
 		return res.ID, res.Hist, res.Lines, false
@@ -198,7 +198,10 @@ func pickTarget(res tui.Result, curID string) (targetID string, hist proto.HistM
 		return curID, proto.HistNone, 0, false
 	case tui.ActionDetach:
 		if curID != "" {
-			_, _ = os.Stdout.Write(attach.TerminalRestore)
+			// Detaching leaves tm for the launching shell. Send the alt-screen exit
+			// only when the session was on the alt screen (curAlt), so detaching at a
+			// plain shell prompt keeps the terminal's scrollback intact.
+			_, _ = os.Stdout.Write(attach.RestoreFor(curAlt))
 		}
 
 		return "", 0, 0, true
@@ -212,6 +215,7 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		status  string
 		curID   string // session the relay is (or just was) on; "" at the top level
 		curName string
+		curAlt  bool // the relay left that session on the alternate screen
 	)
 
 	for {
@@ -227,7 +231,7 @@ func runMenu(st *store.Store, ctrl *controller) error {
 
 		status = ""
 
-		targetID, hist, lines, leave := pickTarget(res, curID)
+		targetID, hist, lines, leave := pickTarget(res, curID, curAlt)
 		if leave {
 			return nil
 		}
@@ -242,21 +246,22 @@ func runMenu(st *store.Store, ctrl *controller) error {
 			_, _ = os.Stdout.Write(attach.TerminalRestore)
 		}
 
-		outcome, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines})
+		outcome, alt, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines})
 		if aerr != nil {
 			// The relay couldn't reach the daemon (a dead session). Reap it so it
 			// stops reappearing in the menu — otherwise reselecting it bounces back
 			// here forever — and reopen the top-level menu with a note.
 			status = afterAttachError(ctrl, aerr)
-			curID, curName = "", ""
+			curID, curName, curAlt = "", "", false
 
 			continue
 		}
 
 		if outcome == attach.OutcomeMenu {
 			// Ctrl-\: reopen the menu framed as in-session, so esc resumes and a pick
-			// switches.
-			curID, curName = targetID, sessionName(st, targetID)
+			// switches. Remember whether the session left the terminal on the alt
+			// screen, so a following [detach session] resets it correctly.
+			curID, curName, curAlt = targetID, sessionName(st, targetID), alt
 
 			continue
 		}
@@ -266,7 +271,7 @@ func runMenu(st *store.Store, ctrl *controller) error {
 			// it). Fall back to the top-level menu instead of leaving tm, so the user
 			// can pick or start another session. The relay already reset the terminal
 			// on its way out, so the menu draws on a clean screen.
-			curID, curName = "", ""
+			curID, curName, curAlt = "", "", false
 
 			continue
 		}
@@ -407,7 +412,7 @@ func RunAttach(id string, hist proto.HistMode, lines uint32) error {
 		return err
 	}
 
-	_, err = attach.Run(p, id, attach.Options{Hist: hist, Lines: lines})
+	_, _, err = attach.Run(p, id, attach.Options{Hist: hist, Lines: lines})
 
 	return err
 }

@@ -111,7 +111,7 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	done := make(chan relayExit, 1)
 
 	go func() {
-		oc, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+		oc, _, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
 			func(string) string { return addr }, "x")
 		done <- relayExit{outcome: oc, err: rerr}
 	}()
@@ -187,7 +187,7 @@ func TestRelayReturnsToMenuOnSessionExit(t *testing.T) {
 	done := make(chan relayExit, 1)
 
 	go func() {
-		oc, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+		oc, _, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
 			func(string) string { return addr }, "x")
 		done <- relayExit{outcome: oc, err: rerr}
 	}()
@@ -251,7 +251,7 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 	done := make(chan relayExit, 1)
 
 	go func() {
-		oc, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+		oc, _, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
 			func(id string) string {
 				if id == "s2" {
 					return addr2
