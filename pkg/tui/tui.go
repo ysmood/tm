@@ -89,17 +89,36 @@ const (
 type paletteCmd struct {
 	id    cmdID
 	label string
+	// key is the key press that runs this command directly from the main menu
+	// (matched against tea.KeyPressMsg.String()); hint is how that key is shown
+	// beside the label. Both are empty for commands with no shortcut.
+	key  string
+	hint string
 }
 
 // palette holds the fixed commands. The bracketed labels are fuzzy-matched like
 // everything else (see rankItems), so typing the letters of a command in order
-// surfaces it — "ds" finds [detach session], "un" finds [use namespace].
+// surfaces it — "ds" finds [detach session], "un" finds [use namespace]. Some
+// also carry a direct shortcut (see cmdForKey), shown dimmed beside the label.
 var palette = []paletteCmd{
-	{cmdNewSession, "[new session]"},
-	{cmdDetachSession, "[detach session]"},
-	{cmdUseNamespace, "[use namespace]"},
-	{cmdDropNamespace, "[drop namespace]"},
-	{cmdHelp, "[help]"},
+	{cmdNewSession, "[new session]", "ctrl+t", "Ctrl-T"},
+	{cmdDetachSession, "[detach session]", "ctrl+\\", "Ctrl-\\"},
+	{cmdUseNamespace, "[use namespace]", "ctrl+g", "Ctrl-G"},
+	{cmdDropNamespace, "[drop namespace]", "", ""},
+	{cmdHelp, "[help]", "", ""},
+}
+
+// cmdForKey maps a key press to the palette command it triggers directly, if
+// any. It backs the main-menu shortcuts (see updatePick), so a key like Ctrl-\
+// runs [detach session] without moving the cursor onto it first.
+func cmdForKey(key string) (cmdID, bool) {
+	for _, c := range palette {
+		if c.key != "" && c.key == key {
+			return c.id, true
+		}
+	}
+
+	return 0, false
 }
 
 // menuPayload is the data attached to a main-menu row: either a command or a
@@ -271,6 +290,7 @@ func (m *Model) menuItems() []pickerItem {
 		items = append(items, pickerItem{
 			label:   c.label,
 			isCmd:   true,
+			hint:    c.hint,
 			payload: menuPayload{isCmd: true, cmdID: c.id},
 		})
 	}
@@ -437,6 +457,16 @@ const (
 )
 
 func (m Model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Command shortcuts fire only on the main menu, where the bracketed commands
+	// live; the scrollback and namespace sub-pickers keep these keys for
+	// navigation and text entry. Checked before the picker sees the key so a
+	// shortcut acts even mid-query (e.g. Ctrl-\ detaches while a filter is typed).
+	if m.pickFor == pickMenu {
+		if id, ok := cmdForKey(msg.String()); ok {
+			return m.selectMenu(menuPayload{isCmd: true, cmdID: id})
+		}
+	}
+
 	action, cmd := m.pick.update(msg)
 	switch action {
 	case pickCanceled:
@@ -805,7 +835,9 @@ func (m Model) viewHelp() string {
 		{"enter", "select the highlighted row"},
 		{"esc", "back, or quit from the main menu (sessions keep running)"},
 		{"Ctrl-C", "quit"},
-		{`Ctrl-\`, "reopen this menu from inside a session"},
+		{`Ctrl-\`, "open this menu from a session, or detach from the menu"},
+		{"Ctrl-T", "new session (from the main menu)"},
+		{"Ctrl-G", "use namespace (from the main menu)"},
 	})
 
 	switchHint := "attach to a session"
@@ -837,6 +869,7 @@ type theme struct {
 	dim     lipgloss.Style
 	sel     lipgloss.Style
 	cmd     lipgloss.Style
+	key     lipgloss.Style
 	status  lipgloss.Style
 	session lipgloss.Style
 	item    lipgloss.Style
@@ -846,10 +879,13 @@ type theme struct {
 // styles builds the lipgloss styles once, on first render.
 var styles = sync.OnceValue(func() theme {
 	return theme{
-		title:   lipgloss.NewStyle().Bold(true),
-		dim:     lipgloss.NewStyle().Faint(true),
-		sel:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-		cmd:     lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
+		title: lipgloss.NewStyle().Bold(true),
+		dim:   lipgloss.NewStyle().Faint(true),
+		sel:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
+		cmd:   lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
+		// A dimmer grey than cmd for the shortcut hints, so a key like "Ctrl-\"
+		// recedes behind its command label (see pickerDelegate.Render).
+		key:     lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		status:  lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
 		session: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),
 		item:    lipgloss.NewStyle().Foreground(lipgloss.Color("15")),

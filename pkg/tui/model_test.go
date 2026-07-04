@@ -56,6 +56,12 @@ var (
 	keyDownMsg  = tea.KeyPressMsg{Code: tea.KeyDown}
 )
 
+// ctrlKey builds a Ctrl-<code> key press, e.g. ctrlKey('t') stringifies to
+// "ctrl+t" — the form the main-menu shortcuts match against.
+func ctrlKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl}
+}
+
 func has(list []string, v string) bool {
 	return slices.Contains(list, v)
 }
@@ -201,6 +207,75 @@ func TestModelDetachSessionQuits(t *testing.T) {
 	g.NotNil(cmd)
 	_, ok := cmd().(tea.QuitMsg)
 	g.True(ok)
+}
+
+// The main menu carries direct shortcuts: Ctrl-\ runs [detach session], Ctrl-T
+// runs [new session], and Ctrl-G runs [use namespace], so the common commands
+// are one keystroke away without moving the cursor onto them.
+func TestModelCommandShortcuts(t *testing.T) {
+	g := got.T(t)
+
+	// Ctrl-\ detaches (like selecting [detach session]).
+	detach := send(New(newStore(g, t), fakeCtrl{}), ctrlKey('\\'))
+	g.True(detach.quit)
+	g.Eq(detach.Result().Action, ActionDetach)
+
+	// Ctrl-T opens the new-session name prompt.
+	newSess := send(New(newStore(g, t), fakeCtrl{}), ctrlKey('t'))
+	g.Eq(newSess.mode, modeInput)
+	g.Eq(newSess.inputPurpose, inputNewSession)
+
+	// Ctrl-G opens the namespace picker in "use" mode.
+	useNs := send(New(newStore(g, t), fakeCtrl{}), ctrlKey('g'))
+	g.Eq(useNs.mode, modePick)
+	g.Eq(useNs.pickFor, pickUseNamespace)
+}
+
+// The shortcuts are scoped to the main menu: inside a sub-picker (here the
+// namespace chooser) Ctrl-\ is not a detach — it falls through to the picker, so
+// the menu stays put instead of quitting tm.
+func TestModelShortcutsMainMenuOnly(t *testing.T) {
+	g := got.T(t)
+	m := New(newStore(g, t), fakeCtrl{})
+
+	m = typeStr(m, "un")
+	m = send(m, keyEnterMsg) // into the [use namespace] sub-picker
+	g.Eq(m.pickFor, pickUseNamespace)
+
+	m = send(m, ctrlKey('\\')) // Ctrl-\ here must not detach
+	g.True(!m.quit)
+	g.Eq(m.pickFor, pickUseNamespace)
+}
+
+// Each shortcut command shows its key hint beside the label on the main menu.
+func TestModelShortcutHintsRendered(t *testing.T) {
+	g := got.T(t)
+	m := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	v := m.View().Content
+	g.Has(v, "Ctrl-T")  // [new session]
+	g.Has(v, "Ctrl-\\") // [detach session]
+	g.Has(v, "Ctrl-G")  // [use namespace]
+}
+
+// The focused row's shortcut highlights with the row: its hint renders in the
+// selection style, while other rows' hints stay in the dim key style. Moving the
+// cursor flips which hint is highlighted.
+func TestModelShortcutHintHighlightsOnFocus(t *testing.T) {
+	g := got.T(t)
+	th := styles()
+	m := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// The cursor starts on [new session], so its Ctrl-T is highlighted while
+	// [detach session]'s Ctrl-\ stays dim.
+	v := m.View().Content
+	g.Has(v, th.sel.Render("Ctrl-T"))
+	g.Has(v, th.key.Render(`Ctrl-\`))
+
+	// Down to [detach session]: now its Ctrl-\ is highlighted and Ctrl-T is dim.
+	v = send(m, keyDownMsg).View().Content
+	g.Has(v, th.sel.Render(`Ctrl-\`))
+	g.Has(v, th.key.Render("Ctrl-T"))
 }
 
 // Selecting [help] opens the detailed help screen; any key dismisses it back to

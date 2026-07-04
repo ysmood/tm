@@ -2,20 +2,25 @@ package tui
 
 import (
 	"io"
+	"strings"
 
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // pickerItem is one selectable row. text overrides the fuzzy-match target (it
 // defaults to label). isCmd marks a bracketed command action (rather than a
-// session or namespace name) so the delegate colors it apart. payload carries
-// whatever the caller needs when the row is chosen.
+// session or namespace name) so the delegate colors it apart. hint is an
+// optional shortcut label (e.g. "Ctrl-T") the delegate renders dimmed at the
+// row's right edge. payload carries whatever the caller needs when the row is
+// chosen.
 type pickerItem struct {
 	label   string
 	text    string
 	isCmd   bool
+	hint    string
 	payload any
 }
 
@@ -54,18 +59,41 @@ func (pickerDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		return
 	}
 
-	if index == m.Index() {
-		_, _ = io.WriteString(w, styles().sel.Render(cursorGlyph+" "+a.label))
+	th := styles()
+	selected := index == m.Index()
 
-		return
+	// The selected row gets the cursor glyph and the selection color; other rows
+	// are indented two cells (matching the glyph plus its trailing space) so labels
+	// stay aligned, with command rows in the command color.
+	var row string
+	if selected {
+		row = th.sel.Render(cursorGlyph + " " + a.label)
+	} else {
+		style := th.item
+		if a.isCmd {
+			style = th.cmd
+		}
+
+		row = "  " + style.Render(a.label)
 	}
 
-	style := styles().item
-	if a.isCmd {
-		style = styles().cmd
+	// A shortcut hint sits flush against the row's right edge. On the focused row
+	// it takes the selection color too, so the whole row highlights together;
+	// otherwise it stays an even dimmer grey (see theme.key), reading as secondary
+	// to the label. The list width matches the box's content width, so padding the
+	// row to it lands the hint on the right border.
+	if a.hint != "" {
+		hintStyle := th.key
+		if selected {
+			hintStyle = th.sel
+		}
+
+		hint := hintStyle.Render(a.hint)
+		gap := max(1, m.Width()-lipgloss.Width(row)-lipgloss.Width(hint))
+		row += strings.Repeat(" ", gap) + hint
 	}
 
-	_, _ = io.WriteString(w, "  "+style.Render(a.label))
+	_, _ = io.WriteString(w, row)
 }
 
 // pickerAction is what a key press resolved to.
