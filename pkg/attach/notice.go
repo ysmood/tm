@@ -34,3 +34,8 @@ func ExitedSessionNotice(name string) []byte { return notice("[tm exited session
 
 // DetachedNotice is shown when tm leaves for the launching shell.
 func DetachedNotice() []byte { return notice("[tm detached]", "", "") }
+
+// DetachedSessionNotice is shown when tm detaches from session name and drops
+// back to the top-level menu (rather than leaving tm), with the session still
+// running in the background.
+func DetachedSessionNotice(name string) []byte { return notice("[tm detached session ", name, "]") }

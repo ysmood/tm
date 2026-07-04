@@ -112,12 +112,9 @@ func TestCtrlBackslashEscPreservesPrompt(t *testing.T) {
 		True(strings.Contains(v.line(v.cur[v.cr]), "ZZMARK>"))
 	g.Desc("cursor must be restored just past the prompt, got column %d", v.cc).Eq(v.cc, promptEndCol)
 
-	// Exit tm cleanly via the menu, then let the process go.
-	_, _ = pt.Write([]byte{0x1c})
-
-	g.True(waitForText(buf, "session:", 8*time.Second))
-
-	_, _ = pt.Write([]byte("detach\r"))
+	// Exit tm cleanly via the menu (Ctrl-\ -> [detach session] -> top-level menu ->
+	// esc), then let the process go.
+	detachViaMenu(g, pt, buf)
 
 	waitExit(c, 8*time.Second)
 }

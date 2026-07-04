@@ -162,10 +162,11 @@ func Run() error {
 // between the interactive menu and the relay. Picking a session attaches the
 // relay; pressing the menu key (Ctrl-\) inside the session returns here and
 // reopens the menu — framed as in-session — so esc resumes that session, picking
-// another switches to it, and [detach session] leaves tm for the launching shell.
-// Exiting the session's shell ends the session and drops back to the top-level
-// menu (rather than leaving tm), so the user can pick or start another session.
-// A failed attach reaps the unreachable session and reopens the menu with a note.
+// another switches to it, and [detach session] drops back to the top-level menu
+// with the session still running (esc there leaves tm). Exiting the session's
+// shell likewise ends the session and drops back to the top-level menu, so the
+// user can pick or start another session. A failed attach reaps the unreachable
+// session and reopens the menu with a note.
 //
 // The menu always acts only once it has fully torn down (the inline picker is
 // erased before the relay's output or a history replay takes over), so the menu
@@ -176,38 +177,46 @@ func Run() error {
 // scrollback — sane, and the relay resets the terminal itself whenever it hands
 // it back.
 // pickTarget maps a menu result to the session the relay should (re)attach, or
-// reports leave=true when the user chose to leave tm. curID is the session the
-// menu was framed as running inside ("" at the top level).
+// reports leave=true (return to the launching shell) or toMenu=true (drop to the
+// top-level menu). curID is the session the menu was framed as running inside
+// ("" at the top level).
 //
 // A picked session (attach or switch — in the relay-menu both just resolve to a
 // target on this terminal) yields that target. esc/Ctrl-C (ActionNone) leaves tm
 // at the top level but resumes the current session when reopened from one,
 // replaying nothing (HistNone) so it doesn't reprint a screen of history over the
-// session's still-visible output. [detach session] leaves tm with every session
-// still running, first resetting the terminal if we came from a session so the
-// launching shell gets it clean.
-func pickTarget(res tui.Result, curID string, curAlt bool) (targetID string, hist proto.HistMode, lines uint32, leave bool) {
+// session's still-visible output. [detach session] from within a session returns
+// to the top-level menu (toMenu) with every session still running, first
+// resetting the terminal so the menu redraws clean; at the top level, where there
+// is no session to detach from, it leaves tm like esc.
+func pickTarget(
+	res tui.Result, curID string, curAlt bool,
+) (targetID string, hist proto.HistMode, lines uint32, leave, toMenu bool) {
 	switch res.Action {
 	case tui.ActionAttach, tui.ActionSwitch:
-		return res.ID, res.Hist, res.Lines, false
+		return res.ID, res.Hist, res.Lines, false, false
 	case tui.ActionNone:
 		if curID == "" {
-			return "", 0, 0, true
+			return "", 0, 0, true, false
 		}
 
-		return curID, proto.HistNone, 0, false
+		return curID, proto.HistNone, 0, false, false
 	case tui.ActionDetach:
 		if curID != "" {
-			// Detaching leaves tm for the launching shell. Send the alt-screen exit
-			// only when the session was on the alt screen (curAlt), so detaching at a
-			// plain shell prompt keeps the terminal's scrollback intact.
+			// Detaching from a session returns to the top-level menu (the session
+			// keeps running), not out of tm. Reset the terminal first — sending the
+			// alt-screen exit only when the session was on the alt screen (curAlt), so
+			// detaching at a plain shell prompt keeps the scrollback — so the top-level
+			// menu redraws on a clean screen, the way a session switch does.
 			_, _ = os.Stdout.Write(attach.RestoreFor(curAlt))
+
+			return "", 0, 0, false, true
 		}
 
-		return "", 0, 0, true
+		return "", 0, 0, true, false
 	}
 
-	return "", 0, 0, true
+	return "", 0, 0, true, false
 }
 
 func runMenu(st *store.Store, ctrl *controller) error {
@@ -231,33 +240,29 @@ func runMenu(st *store.Store, ctrl *controller) error {
 
 		status = ""
 
-		targetID, hist, lines, leave := pickTarget(res, curID, curAlt)
+		targetID, hist, lines, leave, toMenu := pickTarget(res, curID, curAlt)
+		if toMenu {
+			// Detached from a session ([detach session] inside one): drop to the
+			// top-level menu with the session still running, rather than leaving tm.
+			// pickTarget already reset the terminal; note the detached session so it
+			// stays in the scrollback above the reopened menu (whose fresh line the
+			// notice's trailing newline also provides).
+			_, _ = os.Stdout.Write(attach.DetachedSessionNotice(curName))
+			curID, curName, curAlt = "", "", false
+
+			continue
+		}
+
 		if leave {
 			// Left tm for the launching shell (esc at the top level, or [detach
-			// session]). pickTarget already reset the terminal when detaching from a
-			// session; note the departure so it stays in the scrollback.
+			// session] there). Note the departure so it stays in the scrollback.
 			_, _ = os.Stdout.Write(attach.DetachedNotice())
 
 			return nil
 		}
 
 		targetName := sessionName(st, targetID)
-
-		// Announce where the terminal is going. Switching to a different session: the
-		// relay left this session's screen up so the menu could open inline over it,
-		// so reset the terminal (leave the alternate screen, mouse modes, scroll
-		// region, …) and return to column 0 before the target's history replays, so
-		// the replay lands from a known column. Entering a session from the top-level
-		// menu is a fresh attach with nothing to undo. Resuming the same session
-		// (curID == targetID) keeps the screen as-is — that is the point of the inline
-		// menu — so it says nothing.
-		switch {
-		case curID != "" && targetID != curID:
-			_, _ = os.Stdout.Write(attach.SwitchReset)
-			_, _ = os.Stdout.Write(attach.SwitchedNotice(targetName))
-		case curID == "":
-			_, _ = os.Stdout.Write(attach.EnteredNotice(targetName))
-		}
+		announceAttach(curID, targetID, targetName)
 
 		outcome, alt, aerr := attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines, Name: targetName})
 		if aerr != nil {
@@ -290,6 +295,25 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		}
 
 		return nil // local input ended (the terminal went away): leave tm
+	}
+}
+
+// announceAttach writes the terminal reset and status notice for moving the relay
+// onto targetName. Switching to a different session (curID set and != target): the
+// relay left this session's screen up so the menu could open inline over it, so
+// reset the terminal (leave the alternate screen, mouse modes, scroll region, …)
+// and return to column 0 before the target's history replays, so the replay lands
+// from a known column. Entering a session from the top-level menu (curID == "") is
+// a fresh attach with nothing to undo. Resuming the same session (curID ==
+// targetID) keeps the screen as-is — the point of the inline menu — so it says
+// nothing.
+func announceAttach(curID, targetID, targetName string) {
+	switch {
+	case curID != "" && targetID != curID:
+		_, _ = os.Stdout.Write(attach.SwitchReset)
+		_, _ = os.Stdout.Write(attach.SwitchedNotice(targetName))
+	case curID == "":
+		_, _ = os.Stdout.Write(attach.EnteredNotice(targetName))
 	}
 }
 

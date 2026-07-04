@@ -361,8 +361,13 @@ func TestMenuKeyOpensInline(t *testing.T) {
 	g.Desc("the menu must be shown inline beneath it: %q", screen).
 		True(strings.Contains(screen, "session: aaa"))
 
-	// We are already in the menu; leave tm via [detach session].
+	// We are already in the in-session menu; [detach session] drops back to the
+	// top-level menu, then esc there leaves tm.
+	mark = len(buf.String())
 	send("detach\r")
+	g.Desc("detach should return to the top-level menu: %q", buf.String()).
+		True(waitForTextFrom(buf, mark, "[new session]", 10*time.Second))
+	send(string([]byte{0x1b}))
 
 	_ = c.Wait()
 }
@@ -461,6 +466,102 @@ func TestSessionExitReturnsToMenu(t *testing.T) {
 	waitExit(c, 8*time.Second)
 }
 
+// TestDetachFromSessionReturnsToMenu proves the headline of [detach session]:
+// detaching from inside a session no longer leaves tm — it drops back to the
+// top-level menu with the session still running, so the user can pick it (or
+// another) straight away. It attaches a session, detaches via the menu, checks tm
+// stayed up at the top-level menu with the session still in the store, then
+// re-attaches from that menu and runs a command to prove the session (and tm)
+// survived.
+func TestDetachFromSessionReturnsToMenu(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(120 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmdrm")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+	g.Setenv("TM_HOME", t.TempDir())
+	g.Setenv("TM_RUNTIME", rt)
+	killLeftoverDaemons(g)
+
+	bin := buildTM(g, t)
+
+	p, err := config.New()
+	g.E(err)
+	g.E(p.EnsureDirs())
+	st := store.New(p)
+	sess := store.Session{
+		ID: "aaa", Name: "aaa", Namespace: store.DefaultNamespace,
+		Shell: "/bin/sh", CreatedAt: time.Unix(1, 0),
+	}
+	g.E(st.SaveSession(sess))
+	g.E(app.SpawnWith(bin, p, sess))
+
+	pt, err := gopty.New()
+	g.E(err)
+	g.E(pt.Resize(120, 40))
+
+	defer func() { _ = pt.Close() }()
+
+	c := pt.Command(bin) // the real menu, so the relay loop runs
+	c.Env = os.Environ()
+	g.E(c.Start())
+
+	buf := &safeBuilder{}
+	go func() { _, _ = io.Copy(buf, pt) }()
+
+	send := func(s string) {
+		_, werr := pt.Write([]byte(s))
+		g.E(werr)
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Attach to aaa and confirm we are in its live shell.
+	g.True(waitForText(buf, "aaa", 10*time.Second))
+	send("aaa\r")
+	g.True(waitForText(buf, "All history", 10*time.Second))
+	send("\r")
+	time.Sleep(800 * time.Millisecond)
+
+	send("echo IN-SESSION-$((6*7))\r")
+	g.Desc("session output: %q", buf.String()).True(waitForText(buf, "IN-SESSION-42", 10*time.Second))
+
+	// Ctrl-\ opens the in-session menu.
+	mark := len(buf.String())
+	_, err = pt.Write([]byte{0x1c})
+	g.E(err)
+	g.True(waitForTextFrom(buf, mark, "session:", 10*time.Second))
+	time.Sleep(200 * time.Millisecond)
+
+	// [detach session] returns to the top-level menu — it does NOT leave tm — and
+	// prints a session-detached notice above it.
+	mark = len(buf.String())
+	send("detach\r")
+	g.Desc("detach must print a session-detached notice: %q", buf.String()[mark:]).
+		True(waitForTextFrom(buf, mark, "tm detached session", 10*time.Second))
+	g.Desc("detach must return to the top-level menu: %q", buf.String()[mark:]).
+		True(waitForTextFrom(buf, mark, "[new session]", 10*time.Second))
+
+	// The session is still alive — detach is not exit, so its record stays.
+	_, gerr := st.GetSession("aaa")
+	g.Desc("the session must still exist after detach").E(gerr)
+
+	// Re-attach from the top-level menu and run a command: it only reaches a still
+	// live session, proving detach kept both it and tm running.
+	send("aaa\r")
+	g.True(waitForText(buf, "All history", 10*time.Second))
+	send("\r")
+	time.Sleep(800 * time.Millisecond)
+
+	send("echo BACK-$((6*7))\r")
+	g.Desc("session must survive detach and re-attach: %q", buf.String()).
+		True(waitForText(buf, "BACK-42", 10*time.Second))
+
+	// Clean up: leave tm.
+	detachViaMenu(g, pt, buf)
+	waitExit(c, 10*time.Second)
+}
+
 // TestMenuKeyResumeDoesNotReplay proves that opening the menu with Ctrl-\ and then
 // pressing esc to cancel just drops back into the session — it does not replay a
 // screen of history, which would reprint what is already shown. The session must
@@ -546,11 +647,11 @@ func TestMenuKeyResumeDoesNotReplay(t *testing.T) {
 	_ = c.Wait()
 }
 
-// detachViaMenu leaves tm the way a user now does from inside a session: Ctrl-\
-// opens the in-session menu (it no longer detaches on its own), then the
-// [detach session] command drops back to the launching shell with the session
-// still running in the background. It is used by the menu-driven e2e tests, which
-// previously just pressed Ctrl-\ to exit.
+// detachViaMenu leaves tm the way a user now does from inside a session, in two
+// steps: Ctrl-\ opens the in-session menu, [detach session] drops back to the
+// top-level menu (the session keeps running), and esc there finally leaves tm for
+// the launching shell. It is used by the menu-driven e2e tests that just need to
+// get out of tm.
 func detachViaMenu(g got.G, pt gopty.Pty, buf *safeBuilder) {
 	mark := len(buf.String())
 
@@ -564,7 +665,18 @@ func detachViaMenu(g got.G, pt gopty.Pty, buf *safeBuilder) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	_, err = pt.Write([]byte("detach\r")) // filter to [detach session] and run it
+	mark = len(buf.String())
+
+	_, err = pt.Write([]byte("detach\r")) // [detach session] -> top-level menu
+	g.E(err)
+	// The top-level menu drops the "session:" header; wait for its freshly rendered
+	// [new session] row so esc below isn't sent before the menu has reopened.
+	g.Desc("detach should return to the top-level menu: %q", buf.String()).
+		True(waitForTextFrom(buf, mark, "[new session]", 10*time.Second))
+
+	time.Sleep(200 * time.Millisecond)
+
+	_, err = pt.Write([]byte{0x1b}) // esc at the top level leaves tm
 	g.E(err)
 }
 
@@ -721,8 +833,9 @@ func TestMenuCreateAttachDetach(t *testing.T) {
 	send("echo ok-$((6*7))\r")
 	g.Desc("outer buffer: %q", buf.String()).True(waitForText(buf, "ok-42", 15*time.Second))
 
-	// Ctrl-\ opens the in-session menu; [detach session] then leaves tm for the
-	// launching shell while the session keeps running in the background.
+	// Ctrl-\ opens the in-session menu; [detach session] returns to the top-level
+	// menu and esc there leaves tm, with the session still running in the
+	// background.
 	detachViaMenu(g, pt, buf)
 
 	g.E(c.Wait())
@@ -731,7 +844,8 @@ func TestMenuCreateAttachDetach(t *testing.T) {
 // TestMenuReattachCycle drives the real menu through repeated detach/re-attach
 // cycles to prove a session survives detaching and can be picked back out of the
 // menu's session list more than once. It creates a session and runs a command,
-// then detaches (Ctrl-\ leaves tm with the session still running), and twice more
+// then detaches (back to the menu, then esc leaves tm with the session still
+// running), and twice more
 // relaunches tm on the same terminal, selects the session from the list, and runs
 // another command. Each marker (stepN-42 from "$((6*7))") is executed output from
 // the session's own shell, not the echoed input, so it only appears if that
@@ -814,7 +928,7 @@ func TestMenuReattachCycle(t *testing.T) {
 	g.Len(sessions, 1)
 	name := sessions[0].Name
 
-	detachViaMenu(g, pt, buf) // Ctrl-\ menu -> [detach session] -> tm exits
+	detachViaMenu(g, pt, buf) // detach -> top-level menu -> esc -> leave tm
 	g.E(c.Wait())
 
 	// --- re-attach from the menu twice, each time confirming the live shell ---
@@ -834,7 +948,7 @@ func TestMenuReattachCycle(t *testing.T) {
 		send("echo " + m + "-$((6*7))\r")
 		g.Desc("re-attach %d: %q", i, buf.String()).True(waitForText(buf, m+"-42", 15*time.Second))
 
-		detachViaMenu(g, pt, buf) // Ctrl-\ menu -> [detach session] -> tm exits
+		detachViaMenu(g, pt, buf) // detach -> top-level menu -> esc -> leave tm
 		g.E(c.Wait())
 	}
 }
