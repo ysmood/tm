@@ -61,11 +61,14 @@ const (
 	// was launched from within a session, so picking another moves this terminal
 	// there instead of nesting a new relay).
 	ActionSwitch
-	// ActionDetach means leave tm for the launching shell with every session still
-	// running. It is the explicit [detach session] command, kept distinct from
-	// ActionNone so a menu opened mid-session (via Ctrl-\) can tell "esc, resume"
-	// apart from "detach, drop me back at my shell".
+	// ActionDetach is the [detach session] command: from within a session it
+	// returns to the top-level menu (the session keeps running); at the top level,
+	// where there is no session to detach from, app.Run leaves tm.
 	ActionDetach
+	// ActionExit is the explicit [exit] command: leave tm from anywhere with every
+	// session still running. Unlike ActionNone (esc/Ctrl-C/Ctrl-D) it never resumes
+	// the current session, so [exit] leaves tm even from a menu opened mid-session.
+	ActionExit
 )
 
 // Result is the menu's outcome: what to do and the chosen session's replay.
@@ -81,6 +84,7 @@ type cmdID int
 const (
 	cmdNewSession cmdID = iota
 	cmdDetachSession
+	cmdExit
 	cmdUseNamespace
 	cmdDropNamespace
 	cmdHelp
@@ -103,6 +107,7 @@ type paletteCmd struct {
 var palette = []paletteCmd{
 	{cmdNewSession, "[new session]", "ctrl+t", "Ctrl-T"},
 	{cmdDetachSession, "[detach session]", "ctrl+\\", "Ctrl-\\"},
+	{cmdExit, "[exit]", "", ""},
 	{cmdUseNamespace, "[use namespace]", "ctrl+g", "Ctrl-G"},
 	{cmdDropNamespace, "[drop namespace]", "", ""},
 	{cmdHelp, "[help]", "", ""},
@@ -287,12 +292,27 @@ func (m *Model) menuItems() []pickerItem {
 	}
 
 	for _, c := range palette {
-		items = append(items, pickerItem{
+		item := pickerItem{
 			label:   c.label,
 			isCmd:   true,
 			hint:    c.hint,
 			payload: menuPayload{isCmd: true, cmdID: c.id},
-		})
+		}
+		// [exit]'s keys, top level only (esc resumes the session when the menu is
+		// open over one). Both esc and Ctrl-D (VEOF) end the menu on an empty filter,
+		// but Ctrl-D is a no-op once a query is typed — so react to the query and drop
+		// it once there is content.
+		if c.id == cmdExit && m.curSession == "" {
+			item.hintFn = func(query string) string {
+				if query == "" {
+					return "esc or Ctrl-D"
+				}
+
+				return "esc"
+			}
+		}
+
+		items = append(items, item)
 	}
 
 	return items
@@ -454,6 +474,7 @@ func (m Model) WithCurrentSession(id, name string) Model {
 const (
 	keyEsc   = "esc"
 	keyEnter = "enter"
+	keyCtrlD = "ctrl+d"
 )
 
 func (m Model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -537,12 +558,19 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	case cmdNewSession:
 		m.enterInput(inputNewSession, "New session name:", m.ctrl.DefaultSessionName(m.targetNamespace()))
 	case cmdDetachSession:
-		// In tm's model the menu is the detached state: sessions are independent
-		// daemons that keep running. "Detach" therefore means leave tm entirely
-		// and return to the launching shell, with every session still alive. It is
-		// reported as ActionDetach (not a plain cancel) so a menu opened mid-session
-		// with Ctrl-\ leaves to the shell here, while esc resumes the session.
+		// Detach from the current session back to the top-level menu (the session
+		// keeps running); app.Run carries that out. Reported as ActionDetach — not a
+		// plain cancel — so a menu opened mid-session with Ctrl-\ detaches here while
+		// esc resumes the session. To leave tm entirely, use [exit].
 		m.result = Result{Action: ActionDetach}
+		m.quit = true
+
+		return m, tea.Quit
+	case cmdExit:
+		// Leave tm from anywhere (ActionExit), sessions still running. Distinct from
+		// esc/Ctrl-C/Ctrl-D (ActionNone), which resume the current session when the
+		// menu was opened over one; selecting [exit] leaves tm even from there.
+		m.result = Result{Action: ActionExit}
 		m.quit = true
 
 		return m, tea.Quit
@@ -625,6 +653,14 @@ func (m Model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case keyEsc:
 		m.showMenu()
+
+		return m, nil
+	case keyCtrlD:
+		// Ctrl-D (VEOF) backs out to the menu like esc, but only on an empty prompt;
+		// with text typed it does nothing.
+		if m.input.Value() == "" {
+			m.showMenu()
+		}
 
 		return m, nil
 	case keyEnter:
@@ -833,11 +869,12 @@ func (m Model) viewHelp() string {
 		{"↑/↓", "move the cursor (also Ctrl-P/N or Ctrl-K/J)"},
 		{"type", "fuzzy-filter the list"},
 		{"enter", "select the highlighted row"},
-		{"esc", "back, or quit from the main menu (sessions keep running)"},
+		{"esc", "resume the session, or leave tm from the main menu"},
 		{"Ctrl-C", "quit"},
-		{`Ctrl-\`, "open this menu from a session, or detach from the menu"},
+		{`Ctrl-\`, "open this menu from a session; detach back to the menu"},
 		{"Ctrl-T", "new session (from the main menu)"},
 		{"Ctrl-G", "use namespace (from the main menu)"},
+		{"Ctrl-D", "like esc when the filter is empty (EOF)"},
 	})
 
 	switchHint := "attach to a session"
@@ -848,7 +885,8 @@ func (m Model) viewHelp() string {
 	section("Commands", [][2]string{
 		{"<session>", switchHint},
 		{"[new session]", "create and start a new session"},
-		{"[detach session]", "leave tm; every session keeps running"},
+		{"[detach session]", "detach back to the menu; the session keeps running"},
+		{"[exit]", "leave tm; every session keeps running"},
 		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},
 		{"[drop namespace]", "delete a namespace"},
 		{"[help]", "show this help"},

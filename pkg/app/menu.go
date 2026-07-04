@@ -214,6 +214,16 @@ func pickTarget(
 		}
 
 		return "", 0, 0, true, false
+	case tui.ActionExit:
+		// [exit] (Ctrl-D): leave tm from anywhere. When leaving from within a
+		// session, reset the terminal for the launching shell first — the alt-screen
+		// exit only when the session was on it (curAlt), so exiting at a plain shell
+		// prompt keeps the scrollback intact.
+		if curID != "" {
+			_, _ = os.Stdout.Write(attach.RestoreFor(curAlt))
+		}
+
+		return "", 0, 0, true, false
 	}
 
 	return "", 0, 0, true, false
@@ -254,9 +264,9 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		}
 
 		if leave {
-			// Left tm for the launching shell (esc at the top level, or [detach
-			// session] there). Note the departure so it stays in the scrollback.
-			_, _ = os.Stdout.Write(attach.DetachedNotice())
+			// Left tm for the launching shell ([exit] / Ctrl-D, esc or top-level
+			// [detach session]). Note the departure so it stays in the scrollback.
+			_, _ = os.Stdout.Write(attach.ExitedNotice())
 
 			return nil
 		}

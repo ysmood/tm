@@ -272,9 +272,9 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	// hanging until the test's PanicAfter; detach must leave tm for the launcher.
 	waitExit(c, 10*time.Second)
 
-	// Leaving tm for the launching shell prints a detached notice.
-	g.Desc("detach must print a notice: %q", buf.String()[mark:]).
-		True(waitForTextFrom(buf, mark, "tm detached", 10*time.Second))
+	// Leaving tm for the launching shell prints an exited notice.
+	g.Desc("leaving tm must print a notice: %q", buf.String()[mark:]).
+		True(waitForTextFrom(buf, mark, "tm exited", 10*time.Second))
 }
 
 // TestMenuKeyOpensInline proves the menu key opens the menu inline — like running
@@ -560,6 +560,85 @@ func TestDetachFromSessionReturnsToMenu(t *testing.T) {
 	// Clean up: leave tm.
 	detachViaMenu(g, pt, buf)
 	waitExit(c, 10*time.Second)
+}
+
+// TestExitCommandLeavesTM proves [exit] (Ctrl-D) leaves tm from inside a session
+// — unlike [detach session], which returns to the menu, and unlike esc, which
+// resumes. tm exits to the launching shell while the session keeps running.
+func TestExitCommandLeavesTM(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(120 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmexit")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+	g.Setenv("TM_HOME", t.TempDir())
+	g.Setenv("TM_RUNTIME", rt)
+	killLeftoverDaemons(g)
+
+	bin := buildTM(g, t)
+
+	p, err := config.New()
+	g.E(err)
+	g.E(p.EnsureDirs())
+	st := store.New(p)
+	sess := store.Session{
+		ID: "aaa", Name: "aaa", Namespace: store.DefaultNamespace,
+		Shell: "/bin/sh", CreatedAt: time.Unix(1, 0),
+	}
+	g.E(st.SaveSession(sess))
+	g.E(app.SpawnWith(bin, p, sess))
+
+	pt, err := gopty.New()
+	g.E(err)
+	g.E(pt.Resize(120, 40))
+
+	defer func() { _ = pt.Close() }()
+
+	c := pt.Command(bin) // the real menu, so the relay loop runs
+	c.Env = os.Environ()
+	g.E(c.Start())
+
+	buf := &safeBuilder{}
+	go func() { _, _ = io.Copy(buf, pt) }()
+
+	send := func(s string) {
+		_, werr := pt.Write([]byte(s))
+		g.E(werr)
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Attach to aaa and confirm we are in its live shell.
+	g.True(waitForText(buf, "aaa", 10*time.Second))
+	send("aaa\r")
+	g.True(waitForText(buf, "All history", 10*time.Second))
+	send("\r")
+	time.Sleep(800 * time.Millisecond)
+
+	send("echo IN-SESSION-$((6*7))\r")
+	g.Desc("session output: %q", buf.String()).True(waitForText(buf, "IN-SESSION-42", 10*time.Second))
+
+	// Ctrl-\ opens the in-session menu.
+	mark := len(buf.String())
+	_, err = pt.Write([]byte{0x1c})
+	g.E(err)
+	g.True(waitForTextFrom(buf, mark, "session:", 10*time.Second))
+	time.Sleep(200 * time.Millisecond)
+
+	// Select [exit]: it leaves tm for the launching shell — not back to the menu
+	// (that is [detach session]), not resume (that is esc / Ctrl-D).
+	mark = len(buf.String())
+	_, err = pt.Write([]byte("exit\r")) // filter to [exit] and run it
+	g.E(err)
+
+	// Bounded so a regression that fails to exit fails fast instead of hanging.
+	waitExit(c, 10*time.Second)
+	g.Desc("leaving tm must print an exited notice: %q", buf.String()[mark:]).
+		True(waitForTextFrom(buf, mark, "tm exited", 10*time.Second))
+
+	// The session is still alive — [exit] leaves tm, it does not end sessions.
+	_, gerr := st.GetSession("aaa")
+	g.Desc("the session must still exist after [exit]").E(gerr)
 }
 
 // TestMenuKeyResumeDoesNotReplay proves that opening the menu with Ctrl-\ and then

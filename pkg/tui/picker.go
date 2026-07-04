@@ -17,10 +17,14 @@ import (
 // row's right edge. payload carries whatever the caller needs when the row is
 // chosen.
 type pickerItem struct {
-	label   string
-	text    string
-	isCmd   bool
-	hint    string
+	label string
+	text  string
+	isCmd bool
+	hint  string
+	// hintFn, when set, recomputes hint from the current filter query on every
+	// refilter, so a row's shortcut hint can react to what is typed (see the
+	// [exit] row in menuItems).
+	hintFn  func(query string) string
 	payload any
 }
 
@@ -180,7 +184,12 @@ func (p *picker) refilter() {
 	items := make([]list.Item, 0, len(order)+1)
 
 	for _, idx := range order {
-		items = append(items, listAdapter{p.all[idx]})
+		it := p.all[idx]
+		if it.hintFn != nil {
+			it.hint = it.hintFn(query)
+		}
+
+		items = append(items, listAdapter{it})
 	}
 
 	if p.extra != nil {
@@ -212,6 +221,15 @@ func (p *picker) update(msg tea.KeyPressMsg) (pickerAction, tea.Cmd) {
 		return pickSelected, nil
 	case keyEsc:
 		return pickCanceled, nil
+	case keyCtrlD:
+		// Ctrl-D is the terminal EOF (VEOF): on an empty filter it ends the menu
+		// just like esc; with a query typed it does nothing, so it never inserts a
+		// stray character.
+		if p.input.Value() == "" {
+			return pickCanceled, nil
+		}
+
+		return pickNothing, nil
 	}
 
 	before := p.input.Value()

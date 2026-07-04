@@ -191,9 +191,10 @@ func TestModelNewSessionAttachesImmediately(t *testing.T) {
 	g.Eq(res.Hist, proto.HistAll)
 }
 
-// Selecting [detach session] quits tm via ActionDetach (sessions keep running in
-// the background). The dedicated action lets a menu opened mid-session with Ctrl-\
-// tell "detach to my shell" apart from a plain esc, which resumes the session.
+// Selecting [detach session] quits the menu via ActionDetach; app.Run then
+// returns to the top-level menu (the session keeps running). The dedicated action
+// lets a menu opened mid-session with Ctrl-\ tell "detach to the menu" apart from
+// a plain esc, which resumes the session.
 func TestModelDetachSessionQuits(t *testing.T) {
 	g := got.T(t)
 	m := New(newStore(g, t), fakeCtrl{})
@@ -209,9 +210,83 @@ func TestModelDetachSessionQuits(t *testing.T) {
 	g.True(ok)
 }
 
+// [exit] leaves tm from anywhere via ActionExit, selected from the list. Unlike
+// ActionNone (esc/Ctrl-C/Ctrl-D) it exits even from a menu opened over a session,
+// where those keys resume instead.
+func TestModelExitCommand(t *testing.T) {
+	g := got.T(t)
+
+	// Fuzzy-select [exit] from the list.
+	m := typeStr(New(newStore(g, t), fakeCtrl{}), "exit")
+	next, cmd := m.Update(keyEnterMsg)
+
+	final := next.(Model)
+	g.True(final.quit)
+	g.Eq(final.Result().Action, ActionExit)
+	g.NotNil(cmd)
+	_, ok := cmd().(tea.QuitMsg)
+	g.True(ok)
+}
+
+// Ctrl-D is the terminal EOF (VEOF), not a shortcut: on an empty filter it ends
+// the menu exactly like esc — quitting from the main menu (app.Run then leaves
+// tm) — but with a query typed it does nothing.
+func TestModelCtrlDIsEOF(t *testing.T) {
+	g := got.T(t)
+
+	// Empty filter, top level: Ctrl-D quits with ActionNone, just like esc.
+	top := send(New(newStore(g, t), fakeCtrl{}), ctrlKey('d'))
+	g.True(top.quit)
+	g.Eq(top.Result().Action, ActionNone)
+
+	// A query is typed: Ctrl-D is a no-op — the menu stays and the text is intact.
+	typed := typeStr(New(newStore(g, t), fakeCtrl{}), "ne")
+	after := send(typed, ctrlKey('d'))
+	g.True(!after.quit)
+	g.Eq(after.pick.input.Value(), "ne")
+
+	// In a sub-picker, empty Ctrl-D backs out to the main menu, like esc.
+	sub := send(typeStr(New(newStore(g, t), fakeCtrl{}), "un"), keyEnterMsg)
+	g.Eq(sub.pickFor, pickUseNamespace)
+	sub = send(sub, ctrlKey('d'))
+	g.Eq(sub.pickFor, pickMenu)
+	g.True(!sub.quit)
+}
+
+// [exit]'s hint reacts to the filter: on an empty query both esc and Ctrl-D (EOF)
+// end the menu, so both are shown; once a query is typed Ctrl-D is a no-op, so
+// only esc remains. Opened over a session, esc/Ctrl-D resume, so no hint at all.
+func TestModelExitHintReactive(t *testing.T) {
+	g := got.T(t)
+
+	// Empty top-level filter: both keys advertised.
+	m := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	g.Has(m.View().Content, "esc or Ctrl-D")
+
+	// Typing hides Ctrl-D's EOF, leaving esc alone on the [exit] row.
+	m = typeStr(m, "exit")
+	v := m.View().Content
+	g.Has(v, "[exit]")
+	g.Has(v, "esc")
+	g.True(!strings.Contains(v, "Ctrl-D"))
+
+	// Deleting back to an empty filter restores both.
+	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	g.Has(m.View().Content, "esc or Ctrl-D")
+
+	// Opened over a session, esc and Ctrl-D resume, so [exit] shows no key hint.
+	inSess := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), tea.WindowSizeMsg{Width: 80, Height: 24}).View().Content
+	g.Has(inSess, "[exit]")
+	g.True(!strings.Contains(inSess, "esc"))
+	g.True(!strings.Contains(inSess, "Ctrl-D"))
+}
+
 // The main menu carries direct shortcuts: Ctrl-\ runs [detach session], Ctrl-T
-// runs [new session], and Ctrl-G runs [use namespace], so the common commands
-// are one keystroke away without moving the cursor onto them.
+// runs [new session] and Ctrl-G runs [use namespace], so the common commands are
+// one keystroke away without moving the cursor onto them.
 func TestModelCommandShortcuts(t *testing.T) {
 	g := got.T(t)
 

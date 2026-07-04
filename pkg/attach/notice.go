@@ -2,7 +2,8 @@ package attach
 
 // Status notices are the one-line messages tm prints on the terminal when it
 // changes what the terminal is showing: switching to a session, a session's
-// shell exiting, or detaching back to the launching shell. The session name is
+// shell exiting, detaching back to the menu, or leaving for the launching shell.
+// The session name is
 // drawn in the tm accent color (azure #00e6cb, matching the menu's prompt) and
 // the surrounding text in grey, so the name stands out at a glance.
 const (
@@ -32,8 +33,9 @@ func SwitchedNotice(name string) []byte { return notice("[tm switched to session
 // ExitedSessionNotice is shown when session name's shell exits.
 func ExitedSessionNotice(name string) []byte { return notice("[tm exited session ", name, "]") }
 
-// DetachedNotice is shown when tm leaves for the launching shell.
-func DetachedNotice() []byte { return notice("[tm detached]", "", "") }
+// ExitedNotice is shown when tm leaves for the launching shell (the [exit]
+// command, or esc/Ctrl-C at the top level).
+func ExitedNotice() []byte { return notice("[tm exited]", "", "") }
 
 // DetachedSessionNotice is shown when tm detaches from session name and drops
 // back to the top-level menu (rather than leaving tm), with the session still
