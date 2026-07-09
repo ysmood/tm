@@ -46,6 +46,16 @@ unique within a namespace.
 tm then prints `[tm renamed session <old> → <new>]` above the menu, the same way it notes attaching,
 switching and detaching, so the change stays in your scrollback.
 
+### Kill a session
+
+The command is `[kill session]`. You just type words like `kill`, `ks`, `[k`, etc. and hit enter.
+
+Pick the session to kill: its shell is terminated and the session — scrollback and all — is removed
+from the list. The session you are currently inside is not offered; to end it, just exit its shell.
+A session whose background process has already died is simply cleared from the list.
+
+tm then prints `[tm killed session <name>]` above the menu, so the change stays in your scrollback.
+
 ### Attach to a session
 
 Each session will be listed with its name, just type in the name of the session you want to attach to and hit enter. You will be attached to that session.

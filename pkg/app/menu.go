@@ -70,9 +70,21 @@ func (c *controller) Switch(id string, hist proto.HistMode, lines uint32) error 
 
 	// Block until the daemon has forwarded the request and closed, so the switch
 	// is delivered before this menu exits.
-	_, _, _ = conn.Read()
+	awaitClose(conn)
 
 	return nil
+}
+
+// awaitClose blocks until the daemon closes conn, discarding any frames. The
+// control requests (switch, kill) are acknowledged by the daemon closing the
+// connection once it has acted, so waiting for the close is how a sender knows
+// its request was carried out.
+func awaitClose(conn *proto.Conn) {
+	for {
+		if _, _, err := conn.Read(); err != nil {
+			return
+		}
+	}
 }
 
 // DefaultSessionName proposes a unique default name for a new session in ns.
@@ -118,6 +130,30 @@ func (c *controller) CreateAndSpawn(ns, name string) (string, error) {
 	}
 
 	return id, nil
+}
+
+// KillSession ends a session by asking its daemon to shut down, which
+// terminates the shell and removes the session's files. It blocks until the
+// daemon closes the connection — teardown is done — so the menu rebuilds its
+// list only after the session is gone. A session whose daemon is unreachable
+// (killed externally, or stale after a reboot) is removed from the store
+// directly, so [kill session] also clears dead entries.
+func (c *controller) KillSession(id string) error {
+	nc, err := proto.Dial(proto.SockAddr(c.st.Paths(), id))
+	if err != nil {
+		return c.st.DeleteSession(id)
+	}
+
+	defer func() { _ = nc.Close() }()
+
+	conn := proto.NewConn(nc)
+	if err := conn.Write(proto.MsgKill, nil); err != nil {
+		return c.st.DeleteSession(id)
+	}
+
+	awaitClose(conn)
+
+	return nil
 }
 
 // sessionLive reports whether a session's daemon is still running. A

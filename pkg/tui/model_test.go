@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -19,6 +20,17 @@ type fakeCtrl struct{}
 func (fakeCtrl) CreateAndSpawn(string, string) (string, error) { return "id", nil }
 func (fakeCtrl) CurrentSession() (string, string)              { return "", "" }
 func (fakeCtrl) DefaultSessionName(string) string              { return "default-name" }
+func (fakeCtrl) KillSession(string) error                      { return nil }
+
+// killCtrl deletes the killed session from the store, standing in for the real
+// controller's daemon shutdown so the menu's rebuilt list reflects the kill.
+type killCtrl struct {
+	fakeCtrl
+
+	st *store.Store
+}
+
+func (c killCtrl) KillSession(id string) error { return c.st.DeleteSession(id) }
 
 // sessCtrl reports a current-session id and name, simulating a tm launched from
 // within a session's shell.
@@ -329,6 +341,98 @@ func TestModelRenameSessionNoSessions(t *testing.T) {
 	g.Has(m.headerTitle(), "no sessions to rename")
 }
 
+// [kill session] picks a session and ends it: the controller kills it, the menu
+// returns to the main list — which no longer shows it — and the kill is printed
+// above the menu, where it stays in the scrollback.
+func TestModelKillSession(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "k1", Name: "doomed", Namespace: store.DefaultNamespace}))
+
+	m := New(st, killCtrl{st: st})
+
+	m = typeStr(m, "ks")
+	m = send(m, keyEnterMsg) // [kill session] -> the session chooser
+	g.Eq(m.pickFor, pickKillSession)
+
+	next, cmd := m.Update(keyEnterMsg) // the only session
+	m = next.(Model)
+
+	g.Eq(m.mode, modePick)
+	g.Eq(m.pickFor, pickMenu)
+	g.True(!m.quit) // killing never attaches or leaves the menu
+
+	_, err := st.GetSession("k1")
+	g.Is(err, store.ErrNotFound)
+	g.Eq(sessionRows(m), 0) // the rebuilt list no longer shows it
+
+	// The notice names the killed session; tea.Println carries it into the
+	// scrollback above the picker.
+	g.NotNil(cmd)
+	printed := printedLine(cmd)
+	g.Has(printed, "killed session")
+	g.Has(printed, "doomed")
+}
+
+// The kill chooser leaves out the session this tm is running inside — killing it
+// would cut the terminal out from under the relay, and exiting its shell already
+// ends it — while other sessions are listed.
+func TestModelKillSessionExcludesCurrent(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: "oth", Name: "other", Namespace: store.DefaultNamespace}))
+
+	m := New(st, sessCtrl{id: "cur", name: "current"})
+	m = send(typeStr(m, "ks"), keyEnterMsg)
+
+	g.Eq(m.pickFor, pickKillSession)
+	g.Len(m.pick.all, 1)
+	g.Eq(m.pick.all[0].text, "other")
+}
+
+// With no sessions to kill the command says so instead of opening an empty
+// chooser — including when the only session is the one this tm is inside, which
+// the chooser leaves out.
+func TestModelKillSessionNoSessions(t *testing.T) {
+	g := got.T(t)
+
+	m := send(typeStr(New(newStore(g, t), fakeCtrl{}), "ks"), keyEnterMsg)
+	g.Eq(m.pickFor, pickMenu)
+	g.Has(m.headerTitle(), "no sessions to kill")
+
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+
+	in := send(typeStr(New(st, sessCtrl{id: "cur", name: "current"}), "ks"), keyEnterMsg)
+	g.Eq(in.pickFor, pickMenu)
+	g.Has(in.headerTitle(), "no sessions to kill")
+}
+
+// failKillCtrl simulates a kill the controller could not carry out.
+type failKillCtrl struct{ fakeCtrl }
+
+func (failKillCtrl) KillSession(string) error { return errors.New("boom") }
+
+// A failed kill returns to the main menu with the reason in the header; the
+// session, still running, stays in the list.
+func TestModelKillSessionError(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "k1", Name: "sturdy", Namespace: store.DefaultNamespace}))
+
+	m := New(st, failKillCtrl{})
+	m = send(typeStr(m, "ks"), keyEnterMsg)
+
+	next, cmd := m.Update(keyEnterMsg) // the only session
+	m = next.(Model)
+
+	g.Nil(cmd) // nothing printed: nothing happened
+	g.Eq(m.pickFor, pickMenu)
+	g.Has(m.headerTitle(), "failed to kill session: boom")
+	g.Eq(sessionRows(m), 1)
+}
+
 func mustGet(g got.G, st *store.Store, id string) store.Session {
 	s, err := st.GetSession(id)
 	g.E(err)
@@ -492,9 +596,9 @@ func TestModelShortcutHintHighlightsOnFocus(t *testing.T) {
 	g.Has(v, th.sel.Render("Ctrl-T"))
 	g.Has(v, th.key.Render(`Ctrl-\`))
 
-	// Down past [rename session] onto [detach session]: now its Ctrl-\ is
-	// highlighted and Ctrl-T is dim.
-	v = send(send(m, keyDownMsg), keyDownMsg).View().Content
+	// Down past [rename session] and [kill session] onto [detach session]: now its
+	// Ctrl-\ is highlighted and Ctrl-T is dim.
+	v = send(send(send(m, keyDownMsg), keyDownMsg), keyDownMsg).View().Content
 	g.Has(v, th.sel.Render(`Ctrl-\`))
 	g.Has(v, th.key.Render("Ctrl-T"))
 }

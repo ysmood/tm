@@ -43,6 +43,10 @@ type Controller interface {
 	CurrentSession() (id, name string)
 	// DefaultSessionName proposes a unique default name for a new session in ns.
 	DefaultSessionName(ns string) string
+	// KillSession ends the session with the given id: its daemon terminates the
+	// shell and removes the session's files. A session whose daemon is unreachable
+	// (already dead) is removed from the store directly.
+	KillSession(id string) error
 }
 
 // Action is what the user resolved the menu to when it exited; app.Run carries
@@ -85,6 +89,7 @@ type cmdID int
 const (
 	cmdNewSession cmdID = iota
 	cmdRenameSession
+	cmdKillSession
 	cmdDetachSession
 	cmdExit
 	cmdUseNamespace
@@ -109,6 +114,7 @@ type paletteCmd struct {
 var palette = []paletteCmd{
 	{cmdNewSession, "[new session]", "ctrl+t", "Ctrl-T"},
 	{cmdRenameSession, "[rename session]", "", ""},
+	{cmdKillSession, "[kill session]", "", ""},
 	{cmdDetachSession, "[detach session]", "ctrl+\\", "Ctrl-\\"},
 	{cmdExit, "[exit]", "", ""},
 	{cmdUseNamespace, "[use namespace]", "ctrl+g", "Ctrl-G"},
@@ -147,6 +153,10 @@ type newNamespacePayload struct{ name string }
 // name prompt will rename, and the name it prefills with.
 type renamePayload struct{ id, name string }
 
+// killPayload is the data attached to a kill-chooser row: the session to end,
+// and its name for the notice printed afterwards.
+type killPayload struct{ id, name string }
+
 // scrollbackPayload is the data attached to a scrollback-chooser row.
 type scrollbackPayload struct {
 	hist   proto.HistMode
@@ -169,6 +179,7 @@ const (
 	pickMenu pickPurpose = iota
 	pickScrollback
 	pickRenameSession
+	pickKillSession
 	pickUseNamespace
 	pickDropNamespace
 )
@@ -365,6 +376,39 @@ func (m *Model) showRenameSessions() bool {
 
 	m.mode = modePick
 	m.pickFor = pickRenameSession
+	m.pick.setItems(items)
+
+	return true
+}
+
+// showKillSessions lists the sessions [kill session] can target, and reports
+// false when there are none, so the caller says so rather than opening an empty
+// picker. Like the main attach list it leaves out the session this tm is running
+// inside: killing it would cut the terminal out from under the relay showing it,
+// and exiting its shell already ends it.
+func (m *Model) showKillSessions() bool {
+	sessions, _ := m.st.ListByNamespace(m.ns)
+
+	items := make([]pickerItem, 0, len(sessions))
+
+	for _, s := range sessions {
+		if s.ID == m.curSessionID {
+			continue
+		}
+
+		items = append(items, pickerItem{
+			label:   m.sessionLabel(s),
+			text:    s.Name,
+			payload: killPayload{id: s.ID, name: s.Name},
+		})
+	}
+
+	if len(items) == 0 {
+		return false
+	}
+
+	m.mode = modePick
+	m.pickFor = pickKillSession
 	m.pick.setItems(items)
 
 	return true
@@ -578,6 +622,10 @@ func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
 			m.pendingID, m.pendingName = p.id, p.name
 			m.enterInput(inputRenameSession, "Rename session:", p.name)
 		}
+	case pickKillSession:
+		if p, ok := it.payload.(killPayload); ok {
+			return m.killSession(p)
+		}
 	case pickUseNamespace:
 		switch pl := it.payload.(type) {
 		case newNamespacePayload:
@@ -612,6 +660,12 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 		// namespace is empty — then there is nothing to pick.
 		if !m.showRenameSessions() {
 			m.status = "no sessions to rename"
+		}
+	case cmdKillSession:
+		// Pick the session to kill first, unless there is nothing to kill (the
+		// current session doesn't count — exiting its shell ends it).
+		if !m.showKillSessions() {
+			m.status = "no sessions to kill"
 		}
 	case cmdDetachSession:
 		// Detach from the current session back to the top-level menu (the session
@@ -652,6 +706,24 @@ func (m Model) selectScrollback(p scrollbackPayload) (tea.Model, tea.Cmd) {
 	m.showMenu()
 
 	return m.attach(id, p.hist, p.lines)
+}
+
+// killSession ends the chosen session: the controller asks its daemon to shut
+// down, which terminates the shell and removes the session's files. The menu
+// then returns to the main list — rebuilt, so the session is gone from it — and
+// the kill is printed above the picker (like a rename), where it stays in the
+// scrollback.
+func (m Model) killSession(p killPayload) (tea.Model, tea.Cmd) {
+	if err := m.ctrl.KillSession(p.id); err != nil {
+		m.status = "failed to kill session: " + err.Error()
+		m.showMenu()
+
+		return m, nil
+	}
+
+	m.showMenu()
+
+	return m, tea.Println(attach.KilledSessionNotice(p.name))
 }
 
 // createNamespace makes ns and switches the active view to it. It backs the
@@ -969,6 +1041,7 @@ func (m Model) viewHelp() string {
 		{"<session>", switchHint},
 		{"[new session]", "create and start a new session"},
 		{"[rename session]", "rename a session; it keeps running"},
+		{"[kill session]", "end a session's shell and delete it"},
 		{"[detach session]", "detach back to the menu; the session keeps running"},
 		{"[exit]", "leave tm; every session keeps running"},
 		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},

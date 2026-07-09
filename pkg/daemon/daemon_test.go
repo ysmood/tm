@@ -3,6 +3,7 @@
 package daemon_test
 
 import (
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -164,6 +165,69 @@ func TestSwitchForwardedToClient(t *testing.T) {
 	g.Eq(tgt.ID, "dest")
 	g.Eq(tgt.Hist, proto.HistAll)
 	g.Eq(int(tgt.Lines), 7)
+}
+
+// A MsgKill connection ends the session without attaching: the shell is
+// terminated, the attached client is told the session is over (MsgExit), the
+// session's metadata is removed, and the killer's connection closes only once
+// teardown is done.
+func TestKillSession(t *testing.T) {
+	g, st, p := setupDaemon(t)
+	sess := makeSession(g, st, "kill1")
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	nc, c := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistNone, Cols: 80, Rows: 24})
+	defer nc.Close()
+
+	// Make sure the client is fully registered before the kill, so the MsgExit
+	// notification has a client to reach.
+	g.E(c.Write(proto.MsgInput, []byte("echo kill-ready\n")))
+	g.True(readUntil(nc, c, "kill-ready", 10*time.Second))
+
+	// A separate (non-attaching) connection requests the kill, then blocks until
+	// the daemon closes it — the signal that teardown finished.
+	ctl, derr := proto.Dial(d.Addr())
+	g.E(derr)
+
+	defer ctl.Close()
+
+	cc := proto.NewConn(ctl)
+	g.E(cc.Write(proto.MsgKill, nil))
+
+	_ = ctl.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, _, rerr := cc.Read()
+	g.Is(rerr, io.EOF) // not a timeout: the daemon closed after tearing down
+
+	g.E(d.Wait())
+
+	// The attached client was told the session is over, not silently dropped.
+	g.True(readExit(nc, c, 10*time.Second))
+
+	// And the session's metadata is gone.
+	_, gerr := st.GetSession(sess.ID)
+	g.Is(gerr, store.ErrNotFound)
+}
+
+// readExit reads frames until a MsgExit arrives, reporting whether it did.
+func readExit(nc net.Conn, c *proto.Conn, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		_ = nc.SetReadDeadline(deadline)
+
+		mt, _, err := c.Read()
+		if err != nil {
+			return false
+		}
+
+		if mt == proto.MsgExit {
+			return true
+		}
+	}
 }
 
 // readSwitchTo reads frames until a MsgSwitchTo arrives, skipping output frames.

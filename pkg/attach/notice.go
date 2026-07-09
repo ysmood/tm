@@ -56,3 +56,10 @@ func DetachedSessionNotice(name string) []byte { return notice("[tm detached ses
 func RenamedSessionNotice(old, name string) string {
 	return noticeLine("[tm renamed session ", old+" → "+name, "]")
 }
+
+// KilledSessionNotice is shown after [kill session] ends session name. Like
+// RenamedSessionNotice it is a string: the menu is still on screen when the kill
+// lands, so it is printed through Bubble Tea rather than written to the terminal.
+func KilledSessionNotice(name string) string {
+	return noticeLine("[tm killed session ", name, "]")
+}

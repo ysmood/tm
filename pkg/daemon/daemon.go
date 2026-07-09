@@ -168,6 +168,16 @@ func (d *Daemon) handleConn(nc net.Conn) {
 		return
 	}
 
+	// A MsgKill connection ends the session without attaching: shutdown terminates
+	// the shell, tells any attached client the session is over, and removes the
+	// session's files. It runs synchronously here, so the deferred close of this
+	// connection tells the killer that teardown is done.
+	if mt == proto.MsgKill {
+		_ = d.Close()
+
+		return
+	}
+
 	if mt != proto.MsgAttach {
 		return
 	}

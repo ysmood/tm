@@ -37,6 +37,11 @@ const (
 	// MsgSwitchTo is the daemon forwarding a switch request to its attached client:
 	// re-attach to the carried SwitchTarget. Payload is a SwitchTarget.
 	MsgSwitchTo
+	// MsgKill asks the daemon to end the session: terminate the shell, delete the
+	// session's files, and exit. The sender does not attach; the daemon closes the
+	// connection once teardown is done, so the sender can block on a read to know
+	// the session is gone. No payload.
+	MsgKill
 )
 
 // HistMode selects how much scrollback the daemon replays on attach.
