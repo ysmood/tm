@@ -130,6 +130,7 @@ func TestRelaySwitchesSessions(t *testing.T) {
 	go func() { _, _ = io.Copy(buf, pt) }()
 
 	time.Sleep(800 * time.Millisecond)
+
 	_, err = pt.Write([]byte("echo WHO=$TM_SESSION\r"))
 	g.E(err)
 	g.Desc("relay should start on aaa: %q", buf.String()).True(waitForText(buf, "WHO=aaa", 10*time.Second))
@@ -138,6 +139,7 @@ func TestRelaySwitchesSessions(t *testing.T) {
 	// including the target's display name so the relay can announce the switch.
 	nc, derr := proto.Dial(proto.SockAddr(p, "aaa"))
 	g.E(derr)
+
 	conn := proto.NewConn(nc)
 	g.E(conn.Write(proto.MsgSwitch, proto.SwitchTarget{ID: "bbb", Name: "bbb"}.Encode()))
 	_, _, _ = conn.Read() // block until the daemon forwards and closes
@@ -219,6 +221,7 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	// Attach to aaa from the top-level menu.
 	g.True(waitForText(buf, "aaa", 10*time.Second))
 	mark := len(buf.String())
+
 	send("aaa\r") // pick aaa -> scrollback chooser
 	g.True(waitForTextFrom(buf, mark, "All history", 10*time.Second))
 	send("\r") // attach with all history
@@ -239,6 +242,7 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 		True(waitForTextFrom(buf, mark, "session:", 10*time.Second))
 
 	mark = len(buf.String())
+
 	send("bbb\r") // pick bbb -> scrollback chooser
 	g.True(waitForTextFrom(buf, mark, "All history", 10*time.Second))
 	send("\r") // switch to bbb in place
@@ -364,6 +368,7 @@ func TestMenuKeyOpensInline(t *testing.T) {
 	// We are already in the in-session menu; [detach session] drops back to the
 	// top-level menu, then esc there leaves tm.
 	mark = len(buf.String())
+
 	send("detach\r")
 	g.Desc("detach should return to the top-level menu: %q", buf.String()).
 		True(waitForTextFrom(buf, mark, "[new session]", 10*time.Second))
@@ -536,6 +541,7 @@ func TestDetachFromSessionReturnsToMenu(t *testing.T) {
 	// [detach session] returns to the top-level menu — it does NOT leave tm — and
 	// prints a session-detached notice above it.
 	mark = len(buf.String())
+
 	send("detach\r")
 	g.Desc("detach must print a session-detached notice: %q", buf.String()[mark:]).
 		True(waitForTextFrom(buf, mark, "tm detached session", 10*time.Second))

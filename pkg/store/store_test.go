@@ -94,6 +94,63 @@ func TestDeleteSession(t *testing.T) {
 	g.E(st.DeleteSession("z"))
 }
 
+// Renaming keeps the session's id — the socket, log and every derived path hang
+// off it — so a running session survives being renamed.
+func TestRenameSession(t *testing.T) {
+	g, st := setup(t)
+	g.E(st.SaveSession(sess("a1", "web", store.DefaultNamespace, 1)))
+
+	g.E(st.RenameSession("a1", "  api  ")) // surrounding space is trimmed
+
+	out, err := st.GetSession("a1")
+	g.E(err)
+	g.Eq(out.ID, "a1")
+	g.Eq(out.Name, "api")
+}
+
+func TestRenameSessionRejectsEmptyName(t *testing.T) {
+	g, st := setup(t)
+	g.E(st.SaveSession(sess("a1", "web", store.DefaultNamespace, 1)))
+
+	g.Err(st.RenameSession("a1", "   "))
+
+	out, err := st.GetSession("a1")
+	g.E(err)
+	g.Eq(out.Name, "web")
+}
+
+func TestRenameMissingSession(t *testing.T) {
+	g, st := setup(t)
+	g.Is(st.RenameSession("nope", "x"), store.ErrNotFound)
+}
+
+// Names are unique within a namespace, so a name a sibling holds is rejected —
+// but the same name in another namespace is free, and renaming a session to the
+// name it already has is a no-op rather than a self-collision.
+func TestRenameSessionNameCollision(t *testing.T) {
+	g, st := setup(t)
+	g.E(st.SaveSession(sess("a1", "web", store.DefaultNamespace, 1)))
+	g.E(st.SaveSession(sess("a2", "api", store.DefaultNamespace, 2)))
+	g.E(st.SaveSession(sess("w1", "other", "work", 3)))
+
+	g.Err(st.RenameSession("a1", "api")) // taken by a2
+
+	out, err := st.GetSession("a1")
+	g.E(err)
+	g.Eq(out.Name, "web") // left untouched
+
+	g.E(st.RenameSession("a1", "web")) // same name: nothing to do
+	g.E(st.RenameSession("w1", "api")) // another namespace: free
+	g.Eq(mustGet(g, st, "w1").Name, "api")
+}
+
+func mustGet(g got.G, st *store.Store, id string) store.Session {
+	s, err := st.GetSession(id)
+	g.E(err)
+
+	return s
+}
+
 func TestNamespaceCreateAndList(t *testing.T) {
 	g, st := setup(t)
 	g.E(st.CreateNamespace("work"))

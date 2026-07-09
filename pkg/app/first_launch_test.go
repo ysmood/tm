@@ -65,6 +65,7 @@ func TestFirstLaunchAttachErasesPicker(t *testing.T) {
 	_, err = sp.Write([]byte{0x1c})
 	g.E(err)
 	g.E(scmd.Wait())
+
 	_ = sp.Close()
 
 	// Launch the menu from a shell prompt and attach to aaa with all history.
@@ -106,5 +107,6 @@ func TestFirstLaunchAttachErasesPicker(t *testing.T) {
 		False(strings.Contains(screen, "namespace: default"))
 
 	detachViaMenu(g, pt, buf) // Ctrl-\ menu -> [detach session] -> leave tm
+
 	_ = c.Wait()
 }

@@ -21,6 +21,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/ysmood/tm/pkg/attach"
 	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
 )
@@ -83,6 +84,7 @@ type cmdID int
 
 const (
 	cmdNewSession cmdID = iota
+	cmdRenameSession
 	cmdDetachSession
 	cmdExit
 	cmdUseNamespace
@@ -106,6 +108,7 @@ type paletteCmd struct {
 // also carry a direct shortcut (see cmdForKey), shown dimmed beside the label.
 var palette = []paletteCmd{
 	{cmdNewSession, "[new session]", "ctrl+t", "Ctrl-T"},
+	{cmdRenameSession, "[rename session]", "", ""},
 	{cmdDetachSession, "[detach session]", "ctrl+\\", "Ctrl-\\"},
 	{cmdExit, "[exit]", "", ""},
 	{cmdUseNamespace, "[use namespace]", "ctrl+g", "Ctrl-G"},
@@ -140,6 +143,10 @@ type menuPayload struct {
 // yet surfaces this row (see showNamespaces).
 type newNamespacePayload struct{ name string }
 
+// renamePayload is the data attached to a rename-chooser row: the session the
+// name prompt will rename, and the name it prefills with.
+type renamePayload struct{ id, name string }
+
 // scrollbackPayload is the data attached to a scrollback-chooser row.
 type scrollbackPayload struct {
 	hist   proto.HistMode
@@ -161,6 +168,7 @@ type pickPurpose int
 const (
 	pickMenu pickPurpose = iota
 	pickScrollback
+	pickRenameSession
 	pickUseNamespace
 	pickDropNamespace
 )
@@ -169,6 +177,7 @@ type inputPurpose int
 
 const (
 	inputNewSession inputPurpose = iota
+	inputRenameSession
 	inputCustomLines
 )
 
@@ -193,7 +202,10 @@ type Model struct {
 	input        textarea.Model
 	inputPurpose inputPurpose
 
-	pendingID string // session awaiting a scrollback choice
+	pendingID string // session awaiting a scrollback choice or a new name
+	// pendingName is that session's name as the rename prompt opened, kept so the
+	// notice printed afterwards can name both sides of the change.
+	pendingName string
 
 	// width is the terminal width, used to size the bordered boxes and the picker
 	// content inside them (see setWidth, box).
@@ -283,12 +295,7 @@ func (m *Model) menuItems() []pickerItem {
 			continue
 		}
 
-		label := s.Name
-		if m.ns == store.AllNamespaces {
-			label = s.Name + "  (" + s.Namespace + ")"
-		}
-
-		items = append(items, pickerItem{label: label, text: s.Name, payload: menuPayload{sess: s}})
+		items = append(items, pickerItem{label: m.sessionLabel(s), text: s.Name, payload: menuPayload{sess: s}})
 	}
 
 	for _, c := range palette {
@@ -318,11 +325,49 @@ func (m *Model) menuItems() []pickerItem {
 	return items
 }
 
+// sessionLabel is how a session reads as a list row: its name, carrying its
+// namespace in the "*" (all sessions) view where names from different namespaces
+// sit side by side.
+func (m *Model) sessionLabel(s store.Session) string {
+	if m.ns == store.AllNamespaces {
+		return s.Name + "  (" + s.Namespace + ")"
+	}
+
+	return s.Name
+}
+
 // showMenu returns to the main command/session list.
 func (m *Model) showMenu() {
 	m.mode = modePick
 	m.pickFor = pickMenu
 	m.pick.setItems(m.menuItems())
+}
+
+// showRenameSessions lists the sessions [rename session] can target, and reports
+// false when the namespace holds none, so the caller says so rather than opening
+// an empty picker. Unlike the main menu it keeps the session this tm is running
+// inside: renaming the session you are in is the common case, and a rename never
+// attaches, so there is nothing to re-enter.
+func (m *Model) showRenameSessions() bool {
+	sessions, _ := m.st.ListByNamespace(m.ns)
+	if len(sessions) == 0 {
+		return false
+	}
+
+	items := make([]pickerItem, 0, len(sessions))
+	for _, s := range sessions {
+		items = append(items, pickerItem{
+			label:   m.sessionLabel(s),
+			text:    s.Name,
+			payload: renamePayload{id: s.ID, name: s.Name},
+		})
+	}
+
+	m.mode = modePick
+	m.pickFor = pickRenameSession
+	m.pick.setItems(items)
+
+	return true
 }
 
 func (m *Model) showScrollback() {
@@ -528,6 +573,11 @@ func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
 		if p, ok := it.payload.(scrollbackPayload); ok {
 			return m.selectScrollback(p)
 		}
+	case pickRenameSession:
+		if p, ok := it.payload.(renamePayload); ok {
+			m.pendingID, m.pendingName = p.id, p.name
+			m.enterInput(inputRenameSession, "Rename session:", p.name)
+		}
 	case pickUseNamespace:
 		switch pl := it.payload.(type) {
 		case newNamespacePayload:
@@ -557,6 +607,12 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	switch p.cmdID {
 	case cmdNewSession:
 		m.enterInput(inputNewSession, "New session name:", m.ctrl.DefaultSessionName(m.targetNamespace()))
+	case cmdRenameSession:
+		// Pick the session to rename first (the name prompt follows), unless the
+		// namespace is empty — then there is nothing to pick.
+		if !m.showRenameSessions() {
+			m.status = "no sessions to rename"
+		}
 	case cmdDetachSession:
 		// Detach from the current session back to the top-level menu (the session
 		// keeps running); app.Run carries that out. Reported as ActionDetach — not a
@@ -702,6 +758,33 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 		// A brand-new session's "all history" is just that prompt, so this replays
 		// nothing more.
 		return m.attach(id, proto.HistAll, 0)
+	case inputRenameSession:
+		// A rejected name (empty, or one a sibling session already holds) leaves the
+		// prompt open with the typed text intact — the header carries the reason — so
+		// the user can edit it rather than start over; esc backs out.
+		if err := m.st.RenameSession(m.pendingID, val); err != nil {
+			m.status = err.Error()
+
+			return m, nil
+		}
+
+		// The header names the session this menu is framed as running inside, so it
+		// has to follow the rename too.
+		if m.pendingID == m.curSessionID {
+			m.curSession = val
+		}
+
+		old := m.pendingName
+		m.showMenu() // rebuild the list so the session reads by its new name
+
+		if old == val {
+			return m, nil // submitted the name it already had: nothing happened, say nothing
+		}
+
+		// Print the rename above the menu. tea.Println lands the line in the
+		// scrollback unmanaged by the program, so it survives the picker's redraws and
+		// its teardown — the same trail the attach/detach notices leave.
+		return m, tea.Println(attach.RenamedSessionNotice(old, val))
 	case inputCustomLines:
 		n, err := strconv.Atoi(val)
 		if err != nil || n <= 0 {
@@ -885,6 +968,7 @@ func (m Model) viewHelp() string {
 	section("Commands", [][2]string{
 		{"<session>", switchHint},
 		{"[new session]", "create and start a new session"},
+		{"[rename session]", "rename a session; it keeps running"},
 		{"[detach session]", "detach back to the menu; the session keeps running"},
 		{"[exit]", "leave tm; every session keeps running"},
 		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},

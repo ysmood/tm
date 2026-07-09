@@ -47,6 +47,7 @@ func TestProbeImmediateQuit(t *testing.T) {
 	_, err = pt.Write([]byte("\x1b")) // esc to quit immediately
 	g.E(err)
 	time.Sleep(800 * time.Millisecond)
+
 	_ = c.Wait()
 
 	out := buf.String()[mark:]
@@ -54,6 +55,7 @@ func TestProbeImmediateQuit(t *testing.T) {
 	dump := func(needle, label string) {
 		fmt.Printf("  %-28s present=%v count=%d\n", label, strings.Contains(out, needle), strings.Count(out, needle))
 	}
+
 	fmt.Println("=== bytes after esc (post-menu) ===")
 	dump("\x1b[3J", "CSI 3J (erase scrollback)")
 	dump("\x1b[2J", "CSI 2J (erase screen)")

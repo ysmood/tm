@@ -16,11 +16,17 @@ const (
 // the accent color between them. It ends with CRLF so it prints on its own line
 // whether the terminal is in raw or cooked mode.
 func notice(before, name, after string) []byte {
+	return []byte(noticeLine(before, name, after) + "\r\n")
+}
+
+// noticeLine is notice without the trailing CRLF, for callers that own the line
+// break themselves (the menu prints through Bubble Tea, which adds it).
+func noticeLine(before, name, after string) string {
 	if name == "" {
-		return []byte(noticeGrey + before + after + noticeReset + "\r\n")
+		return noticeGrey + before + after + noticeReset
 	}
 
-	return []byte(noticeGrey + before + noticeAccent + name + noticeGrey + after + noticeReset + "\r\n")
+	return noticeGrey + before + noticeAccent + name + noticeGrey + after + noticeReset
 }
 
 // EnteredNotice is shown when the terminal attaches to session name from the
@@ -41,3 +47,12 @@ func ExitedNotice() []byte { return notice("[tm exited]", "", "") }
 // back to the top-level menu (rather than leaving tm), with the session still
 // running in the background.
 func DetachedSessionNotice(name string) []byte { return notice("[tm detached session ", name, "]") }
+
+// RenamedSessionNotice is shown after [rename session] renames old to name. It
+// names both sides of the change, since neither alone identifies what happened.
+// Unlike the others it is a string, not bytes: the menu is still on screen when a
+// rename lands, so it is printed through Bubble Tea (which appends the line break
+// and keeps the line above the picker) rather than written to the terminal.
+func RenamedSessionNotice(old, name string) string {
+	return noticeLine("[tm renamed session ", old+" → "+name, "]")
+}

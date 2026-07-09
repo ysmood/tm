@@ -63,6 +63,7 @@ func TestExitReopensMenuInline(t *testing.T) {
 	g.True(waitForText(buf, "INSESSION-42", 10*time.Second))
 
 	mark := len(buf.String())
+
 	send("exit\r")
 	g.True(waitForTextFrom(buf, mark, "new session", 10*time.Second))
 	time.Sleep(500 * time.Millisecond)

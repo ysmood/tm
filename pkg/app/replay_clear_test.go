@@ -74,6 +74,7 @@ func TestReattachReplaysHistoryPastClear(t *testing.T) {
 	_, err = pt.Write([]byte{0x1c}) // detach; session keeps running
 	g.E(err)
 	g.E(c.Wait())
+
 	_ = pt.Close()
 
 	// Re-attach with all history (hist=1 => HistAll).
@@ -91,6 +92,7 @@ func TestReattachReplaysHistoryPastClear(t *testing.T) {
 
 	g.True(waitForText(buf2, "AFTER-CLEAR-MARK", 10*time.Second))
 	time.Sleep(500 * time.Millisecond)
+
 	replay := buf2.String()
 
 	// The pre-clear content the user wants to scroll back to is present...
@@ -104,5 +106,6 @@ func TestReattachReplaysHistoryPastClear(t *testing.T) {
 
 	_, err = pt2.Write([]byte{0x1c})
 	g.E(err)
+
 	_ = c2.Wait()
 }

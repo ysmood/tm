@@ -152,8 +152,10 @@ func TestSwitchForwardedToClient(t *testing.T) {
 	// A separate (non-attaching) connection requests the switch, then closes.
 	ctl, derr := proto.Dial(d.Addr())
 	g.E(derr)
+
 	cc := proto.NewConn(ctl)
 	g.E(cc.Write(proto.MsgSwitch, proto.SwitchTarget{ID: "dest", Hist: proto.HistAll, Lines: 7}.Encode()))
+
 	_ = ctl.Close()
 
 	// The attached client receives the forwarded target (reading past any shell

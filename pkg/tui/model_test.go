@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -106,6 +107,7 @@ func TestModelHidesCurrentSessionFromList(t *testing.T) {
 	g.Eq(sessionRows(m), 1) // only the other session, not the one we are in
 
 	var labels []string
+
 	for _, it := range m.pick.all {
 		if p, ok := it.payload.(menuPayload); ok && !p.isCmd {
 			labels = append(labels, it.text)
@@ -189,6 +191,149 @@ func TestModelNewSessionAttachesImmediately(t *testing.T) {
 	// HistAll, not HistNone: replay history so the shell's first prompt is shown
 	// even when the daemon already printed it before the relay attached.
 	g.Eq(res.Hist, proto.HistAll)
+}
+
+// [rename session] picks a session, prefills its name, and writes the new one to
+// the store. The session keeps running — the menu just returns to the main list,
+// which now shows the new name — and the rename is printed above the menu, where
+// it stays in the scrollback.
+func TestModelRenameSession(t *testing.T) {
+	const id, before, after = "r1", "alpha", "alpha-2"
+
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: id, Name: before, Namespace: store.DefaultNamespace}))
+
+	m := New(st, fakeCtrl{})
+
+	m = typeStr(m, "rs")
+	m = send(m, keyEnterMsg) // [rename session] -> the session chooser
+	g.Eq(m.pickFor, pickRenameSession)
+
+	m = send(m, keyEnterMsg) // the only session
+	g.Eq(m.mode, modeInput)
+	g.Eq(m.inputPurpose, inputRenameSession)
+	g.Eq(m.input.Value(), before) // prefilled with the current name
+
+	m = typeStr(m, "-2")
+
+	next, cmd := m.Update(keyEnterMsg)
+	m = next.(Model)
+
+	g.Eq(m.mode, modePick)
+	g.Eq(m.pickFor, pickMenu)
+	g.True(!m.quit) // renaming never attaches or leaves the menu
+	g.Eq(mustGet(g, st, id).Name, after)
+
+	// The notice names both sides of the change; tea.Println carries it into the
+	// scrollback above the picker.
+	g.NotNil(cmd)
+	printed := printedLine(cmd)
+	g.Has(printed, "renamed session")
+	g.Has(printed, before)
+	g.Has(printed, after)
+
+	m = send(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	g.Has(m.View().Content, after)
+}
+
+// printedLine renders the message a tea.Println command carries, so tests can
+// assert on what the menu printed above itself (the message type is unexported by
+// Bubble Tea, so it is matched as text).
+func printedLine(cmd tea.Cmd) string {
+	return fmt.Sprintf("%v", cmd())
+}
+
+// Submitting the name a session already has is not a rename: nothing is printed.
+func TestModelRenameSessionUnchangedPrintsNothing(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "u1", Name: "epsilon", Namespace: store.DefaultNamespace}))
+
+	m := New(st, fakeCtrl{})
+	m = send(typeStr(m, "rs"), keyEnterMsg)
+	m = send(m, keyEnterMsg) // the only session -> the prompt, prefilled with its name
+	g.Eq(m.mode, modeInput)
+
+	next, cmd := m.Update(keyEnterMsg) // submit it unchanged
+	m = next.(Model)
+
+	g.Eq(m.pickFor, pickMenu)
+	g.Nil(cmd)
+}
+
+// The rename chooser keeps the session this tm is running inside — the main menu
+// hides it, but renaming the session you are in is the common case — and the
+// header follows the new name.
+func TestModelRenameCurrentSession(t *testing.T) {
+	const id, before, after = "c1", "beta", "beta!"
+
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: id, Name: before, Namespace: store.DefaultNamespace}))
+
+	m := New(st, sessCtrl{id: id, name: before})
+	g.Eq(sessionRows(m), 0) // hidden from the attach list
+
+	m = typeStr(m, "rs")
+	m = send(m, keyEnterMsg)
+	g.Eq(m.pickFor, pickRenameSession)
+	g.Len(m.pick.all, 1) // but listed here
+
+	m = send(m, keyEnterMsg)
+	m = typeStr(m, "!")
+	m = send(m, keyEnterMsg)
+
+	g.Eq(mustGet(g, st, id).Name, after)
+	g.Eq(m.curSession, after) // the header hint follows the rename
+	g.Has(m.headerTitle(), after)
+}
+
+// A name another session in the namespace already holds is rejected: the prompt
+// stays open with the typed text intact, the reason shown in the header, and the
+// store is untouched.
+func TestModelRenameSessionCollision(t *testing.T) {
+	const id, keep, taken = "x1", "gamma", "delta"
+
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: id, Name: keep, Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: "x2", Name: taken, Namespace: store.DefaultNamespace}))
+
+	m := New(st, fakeCtrl{})
+	m = send(typeStr(m, "rs"), keyEnterMsg)
+	m = send(typeStr(m, keep), keyEnterMsg) // filter the chooser down to the session to rename
+
+	m.input.SetValue(taken) // the name its sibling x2 holds
+	m = send(m, keyEnterMsg)
+
+	g.Eq(m.mode, modeInput) // still on the prompt, ready to be edited
+	g.Eq(m.input.Value(), taken)
+	g.Has(m.headerTitle(), "already in use")
+	g.Eq(mustGet(g, st, id).Name, keep)
+
+	// esc backs out to the main menu without renaming.
+	m = send(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	g.Eq(m.pickFor, pickMenu)
+	g.Eq(mustGet(g, st, id).Name, keep)
+}
+
+// With no sessions to rename the command says so instead of opening an empty
+// chooser.
+func TestModelRenameSessionNoSessions(t *testing.T) {
+	g := got.T(t)
+	m := New(newStore(g, t), fakeCtrl{})
+
+	m = send(typeStr(m, "rs"), keyEnterMsg)
+	g.Eq(m.pickFor, pickMenu)
+	g.Has(m.headerTitle(), "no sessions to rename")
+}
+
+func mustGet(g got.G, st *store.Store, id string) store.Session {
+	s, err := st.GetSession(id)
+	g.E(err)
+
+	return s
 }
 
 // Selecting [detach session] quits the menu via ActionDetach; app.Run then
@@ -347,8 +492,9 @@ func TestModelShortcutHintHighlightsOnFocus(t *testing.T) {
 	g.Has(v, th.sel.Render("Ctrl-T"))
 	g.Has(v, th.key.Render(`Ctrl-\`))
 
-	// Down to [detach session]: now its Ctrl-\ is highlighted and Ctrl-T is dim.
-	v = send(m, keyDownMsg).View().Content
+	// Down past [rename session] onto [detach session]: now its Ctrl-\ is
+	// highlighted and Ctrl-T is dim.
+	v = send(send(m, keyDownMsg), keyDownMsg).View().Content
 	g.Has(v, th.sel.Render(`Ctrl-\`))
 	g.Has(v, th.key.Render("Ctrl-T"))
 }

@@ -59,6 +59,7 @@ func TestNewSessionShowsInitialPrompt(t *testing.T) {
 	g.True(waitForText(buf, "New session name", 10*time.Second))
 
 	mark := len(buf.String())
+
 	send("\r") // accept the default name -> spawn + attach
 
 	// The prompt must appear on its own, with no command typed.

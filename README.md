@@ -35,6 +35,17 @@ of `tm` windows can read it at once with no locking.
 There is also no client-server like tmux: each session runs as its own independent background
 process, so there is no shared server that can die and take all your sessions with it.
 
+### Rename a session
+
+The command is `[rename session]`. You just type words like `rename`, `rs`, `[r`, etc. and hit enter.
+
+Pick the session you want to rename — including the one you are currently inside — then edit its
+name and hit enter. The session keeps running throughout; only its label changes. Names must be
+unique within a namespace.
+
+tm then prints `[tm renamed session <old> → <new>]` above the menu, the same way it notes attaching,
+switching and detaching, so the change stays in your scrollback.
+
 ### Attach to a session
 
 Each session will be listed with its name, just type in the name of the session you want to attach to and hit enter. You will be attached to that session.

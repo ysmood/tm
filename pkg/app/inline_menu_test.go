@@ -72,6 +72,7 @@ func TestInlineMenuClearsLikeFzf(t *testing.T) {
 	_, err = bp.Write([]byte{0x1c})
 	g.E(err)
 	g.E(bc.Wait())
+
 	_ = bp.Close()
 
 	// Attach to aaa and print a marker we expect to stay on screen.
@@ -128,6 +129,7 @@ func TestInlineMenuClearsLikeFzf(t *testing.T) {
 
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)
+
 	_ = c.Wait()
 }
 
@@ -182,6 +184,33 @@ func (v *vt) newline() {
 	}
 }
 
+// reverseIndex is ESC M: cursor up one row, scrolling the screen down when it is
+// already at the top. Bubble Tea uses it (with insertLines) to open a line above
+// the inline picker for tea.Println output.
+func (v *vt) reverseIndex() {
+	if v.cr > 0 {
+		v.cr--
+
+		return
+	}
+
+	v.insertLines(1)
+}
+
+// insertLines is CSI L: push the rows from the cursor down by n, blanking the n
+// rows it opens up. Rows shifted past the bottom are lost.
+func (v *vt) insertLines(n int) {
+	blank := v.blank()
+
+	for i := v.rows - 1; i >= v.cr+n; i-- {
+		v.cur[i] = v.cur[i-n]
+	}
+
+	for i := v.cr; i < min(v.cr+n, v.rows); i++ {
+		v.cur[i] = blank[i]
+	}
+}
+
 func (v *vt) put(ch rune) {
 	if v.cc >= v.cols {
 		v.cc = 0
@@ -201,10 +230,15 @@ func (v *vt) feed(p []byte) {
 		case b == 0x1b && i+1 < len(p) && p[i+1] == '8': // DECRC: restore cursor
 			v.cr, v.cc = v.savedR, v.savedC
 			i += 2
+		case b == 0x1b && i+1 < len(p) && p[i+1] == 'M': // RI: reverse index
+			v.reverseIndex()
+
+			i += 2
 		case b == 0x1b:
 			i += v.esc(p[i:])
 		case b == '\n':
 			v.newline()
+
 			i++
 		case b == '\r':
 			v.cc = 0
@@ -213,12 +247,14 @@ func (v *vt) feed(p []byte) {
 			if v.cc > 0 {
 				v.cc--
 			}
+
 			i++
 		case b < 0x20:
 			i++
 		default:
 			r, size := utf8.DecodeRune(p[i:])
 			v.put(r) // each rune is one column (no wide chars in this UI)
+
 			i += size
 		}
 	}
@@ -283,6 +319,8 @@ func (v *vt) apply(params string, final byte) {
 		v.cr, v.cc = max(0, n(0, 1)-1), max(0, n(1, 1)-1)
 	case 'J':
 		v.eraseDisplay(n(0, 0))
+	case 'L':
+		v.insertLines(n(0, 1))
 	case 'K':
 		for j := v.cc; j < v.cols; j++ {
 			v.cur[v.cr][j] = ' '

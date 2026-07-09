@@ -57,6 +57,42 @@ func (s *Store) GetSession(id string) (Session, error) {
 	return readSession(s.paths.SessionFile(id))
 }
 
+// RenameSession changes a session's display name in place, leaving its id — and
+// so its socket, log and every other derived path — untouched, which is why a
+// rename is safe while the session is running. Names must be unique within a
+// namespace (the generated defaults are, see naming.Unique), so a name another
+// session in the same namespace already holds is rejected.
+func (s *Store) RenameSession(id, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("name cannot be empty")
+	}
+
+	sess, err := s.GetSession(id)
+	if err != nil {
+		return err
+	}
+
+	if sess.Name == name {
+		return nil // renaming to the same name: nothing to write
+	}
+
+	siblings, err := s.ListByNamespace(sess.Namespace)
+	if err != nil {
+		return err
+	}
+
+	for _, sib := range siblings {
+		if sib.ID != id && sib.Name == name {
+			return errors.New("name already in use: " + name)
+		}
+	}
+
+	sess.Name = name
+
+	return s.SaveSession(sess)
+}
+
 // DeleteSession removes a session's metadata plus its transient files (log,
 // socket, ready marker, daemon log). Missing files are ignored.
 func (s *Store) DeleteSession(id string) error {

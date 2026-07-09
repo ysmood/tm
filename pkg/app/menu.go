@@ -250,6 +250,12 @@ func runMenu(st *store.Store, ctrl *controller) error {
 
 		status = ""
 
+		// [rename session] may have renamed the session this menu was framed as
+		// running inside, so re-read its name before the notices below quote it.
+		if curID != "" {
+			curName = sessionName(st, curID)
+		}
+
 		targetID, hist, lines, leave, toMenu := pickTarget(res, curID, curAlt)
 		if toMenu {
 			// Detached from a session ([detach session] inside one): drop to the
