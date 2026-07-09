@@ -71,6 +71,12 @@ leaving the session. From there you can switch to another session or start a new
 one, and pressing `esc` (or `Ctrl-\` again) drops you straight back into the
 session you came from, right where you left off.
 
+`Ctrl-\` also works while a long history replay (say, "All history" on a busy
+session) is still streaming: the replay pauses on the spot and the menu opens
+immediately. Press `esc` to resume it right where it stopped; pick anything else
+— another session, `[detach session]`, `[exit]` — and the rest of the log is
+never loaded.
+
 ### Exit a session
 
 Exiting the session's shell itself (typing `exit` or pressing `Ctrl-D`) ends the

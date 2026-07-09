@@ -42,6 +42,12 @@ const (
 	// connection once teardown is done, so the sender can block on a read to know
 	// the session is gone. No payload.
 	MsgKill
+	// MsgReplayDone marks the end of the history replay that follows a MsgAttach:
+	// every Output frame before it is recorded history, everything after is live.
+	// The relay uses it to treat the menu key differently mid-replay — pausing the
+	// replay instead of detaching — so a long history can be interrupted. Relays
+	// that predate it just ignore it. No payload.
+	MsgReplayDone
 )
 
 // HistMode selects how much scrollback the daemon replays on attach.

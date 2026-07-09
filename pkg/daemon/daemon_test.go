@@ -215,6 +215,63 @@ func TestKillSession(t *testing.T) {
 	g.Is(gerr, store.ErrNotFound)
 }
 
+// Every attach replay ends with a MsgReplayDone marker — recorded history
+// before it, live output after — so the relay can tell mid-replay apart from
+// live (the menu key pauses the former instead of detaching). It is sent even
+// when there is no history to replay.
+func TestReplayDoneMarker(t *testing.T) {
+	g, st, p := setupDaemon(t)
+	sess := makeSession(g, st, "marker1")
+
+	// Seed recorded history so the replay is non-empty.
+	g.E(os.WriteFile(p.LogFile(sess.ID), []byte("SEEDED-HISTORY\n"), 0o600))
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	nc, c := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistAll, Cols: 80, Rows: 24})
+	defer nc.Close()
+
+	// All of the history arrives before the marker.
+	deadline := time.Now().Add(10 * time.Second)
+
+	var hist strings.Builder
+
+	for {
+		_ = nc.SetReadDeadline(deadline)
+
+		mt, payload, rerr := c.Read()
+		g.E(rerr)
+
+		if mt == proto.MsgReplayDone {
+			break
+		}
+
+		if mt == proto.MsgOutput {
+			hist.Write(payload)
+		}
+	}
+
+	g.Has(hist.String(), "SEEDED-HISTORY")
+
+	// After the marker the session is live: input echoes as ordinary output.
+	g.E(c.Write(proto.MsgInput, []byte("echo live-after-marker\n")))
+	g.True(readUntil(nc, c, "live-after-marker", 10*time.Second))
+
+	// A replay-less attach (HistNone) still gets the marker, as its first frame:
+	// the daemon holds live output back until the replay phase is over.
+	nc2, c2 := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistNone, Cols: 80, Rows: 24})
+	defer nc2.Close()
+
+	_ = nc2.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+	mt, _, rerr := c2.Read()
+	g.E(rerr)
+	g.Eq(mt, proto.MsgReplayDone)
+}
+
 // A kill must end even a shell that traps SIGHUP and SIGTERM: closing the PTY
 // only delivers SIGHUP to the foreground process group, and shutdown deletes
 // the session's record — anything surviving the kill would live on as an orphan
