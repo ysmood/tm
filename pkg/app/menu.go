@@ -70,19 +70,20 @@ func (c *controller) Switch(id string, hist proto.HistMode, lines uint32) error 
 
 	// Block until the daemon has forwarded the request and closed, so the switch
 	// is delivered before this menu exits.
-	awaitClose(conn)
+	_ = awaitClose(conn)
 
 	return nil
 }
 
-// awaitClose blocks until the daemon closes conn, discarding any frames. The
-// control requests (switch, kill) are acknowledged by the daemon closing the
-// connection once it has acted, so waiting for the close is how a sender knows
-// its request was carried out.
-func awaitClose(conn *proto.Conn) {
+// awaitClose blocks until the daemon closes conn (or a read deadline set on the
+// underlying connection expires), discarding any frames and returning the read
+// error that ended the wait. The control requests (switch, kill) are
+// acknowledged by the daemon closing the connection once it has acted, so
+// waiting for the close is how a sender knows its request was carried out.
+func awaitClose(conn *proto.Conn) error {
 	for {
 		if _, _, err := conn.Read(); err != nil {
-			return
+			return err
 		}
 	}
 }
@@ -132,28 +133,58 @@ func (c *controller) CreateAndSpawn(ns, name string) (string, error) {
 	return id, nil
 }
 
-// KillSession ends a session by asking its daemon to shut down, which
-// terminates the shell and removes the session's files. It blocks until the
-// daemon closes the connection — teardown is done — so the menu rebuilds its
-// list only after the session is gone. A session whose daemon is unreachable
-// (killed externally, or stale after a reboot) is removed from the store
-// directly, so [kill session] also clears dead entries.
+// killTimeout bounds how long KillSession waits for a daemon to tear down. A
+// wedged daemon — say, blocked writing output to a suspended client — would
+// otherwise hang the menu forever. A var so tests can shorten it.
+var killTimeout = 5 * time.Second
+
+// KillSession ends a session by asking its daemon to shut down, which kills the
+// shell and removes the session's files. It blocks (bounded by killTimeout)
+// until the daemon closes the connection — teardown is done — so the menu
+// rebuilds its list only after the session is gone. A session whose daemon
+// can't be asked at all falls back to killUnreachable.
 func (c *controller) KillSession(id string) error {
 	nc, err := proto.Dial(proto.SockAddr(c.st.Paths(), id))
 	if err != nil {
-		return c.st.DeleteSession(id)
+		return c.killUnreachable(id)
 	}
 
 	defer func() { _ = nc.Close() }()
 
 	conn := proto.NewConn(nc)
 	if err := conn.Write(proto.MsgKill, nil); err != nil {
-		return c.st.DeleteSession(id)
+		return c.killUnreachable(id)
 	}
 
-	awaitClose(conn)
+	// On timeout the record is left in place: the daemon may still be mid-teardown,
+	// and if it truly is wedged the session is at least still visible (and
+	// retryable) rather than silently orphaned.
+	_ = nc.SetReadDeadline(time.Now().Add(killTimeout))
+
+	if err := awaitClose(conn); errors.Is(err, os.ErrDeadlineExceeded) {
+		return errors.New("timed out waiting for the session to shut down")
+	}
 
 	return nil
+}
+
+// killUnreachable handles killing a session whose daemon can't be asked to shut
+// down (the dial or the kill request failed). Only a session whose process is
+// gone is treated as dead and removed from the store — mirroring Reap — because
+// a live daemon can lose its socket file (e.g. to a /tmp cleaner pruning the
+// runtime dir) while it and its shell run on; deleting the record then would
+// orphan them untracked.
+func (c *controller) killUnreachable(id string) error {
+	sess, err := c.st.GetSession(id)
+	if err != nil {
+		return err
+	}
+
+	if sessionLive(sess) {
+		return errors.New("session is alive but unreachable (pid " + strconv.Itoa(sess.PID) + ")")
+	}
+
+	return c.st.DeleteSession(id)
 }
 
 // sessionLive reports whether a session's daemon is still running. A

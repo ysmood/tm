@@ -102,8 +102,15 @@ func (d *Daemon) Wait() error {
 // ExitCode returns the shell's exit code (valid after Wait).
 func (d *Daemon) ExitCode() int { return d.exitCode }
 
-// Close forces the session to shut down, terminating the shell.
+// Close forces the session to shut down, killing the shell outright. The kill
+// (see killShell) is needed on top of shutdown's PTY close: closing the PTY
+// only delivers SIGHUP to the foreground process group, which anything can trap
+// or ignore — and since shutdown deletes the session's record, processes
+// surviving it would live on as orphans nothing tracks. The natural-exit path
+// (ptyLoop reaching shutdown) never signals, so background jobs meant to
+// outlive their shell (nohup and the like) still can.
 func (d *Daemon) Close() error {
+	killShell(d.pty)
 	d.shutdown(-1)
 
 	return nil

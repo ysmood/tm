@@ -6,7 +6,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -210,6 +213,102 @@ func TestKillSession(t *testing.T) {
 	// And the session's metadata is gone.
 	_, gerr := st.GetSession(sess.ID)
 	g.Is(gerr, store.ErrNotFound)
+}
+
+// A kill must end even a shell that traps SIGHUP and SIGTERM: closing the PTY
+// only delivers SIGHUP to the foreground process group, and shutdown deletes
+// the session's record — anything surviving the kill would live on as an orphan
+// nothing tracks. The daemon therefore SIGKILLs the shell's process group,
+// which also sweeps up children that inherited the ignored SIGHUP (here a
+// background sleep sharing the shell's group).
+func TestKillSessionStubbornShell(t *testing.T) {
+	g, st, p := setupDaemon(t)
+
+	// A "shell" that ignores the catchable termination signals, starts a child
+	// that inherits those dispositions, and reports both pids.
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	script := filepath.Join(dir, "stubborn.sh")
+	g.E(os.WriteFile(script, []byte(
+		"#!/bin/sh\ntrap '' HUP TERM\nsleep 120 &\necho \"$$ $!\" > "+pidFile+"\nwait\n"), 0o700))
+
+	sess := makeSession(g, st, "stub1")
+	sess.Shell = script
+	g.E(st.SaveSession(sess))
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	pids := awaitPIDs(g, pidFile)
+	g.Len(pids, 2) // the shell and its sleep
+
+	ctl, derr := proto.Dial(d.Addr())
+	g.E(derr)
+
+	defer ctl.Close()
+
+	cc := proto.NewConn(ctl)
+	g.E(cc.Write(proto.MsgKill, nil))
+
+	_ = ctl.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, _, rerr := cc.Read()
+	g.Is(rerr, io.EOF) // teardown done
+
+	g.E(d.Wait())
+
+	// Both must be dead — polled, since the daemon reaps the shell asynchronously.
+	for _, pid := range pids {
+		g.Desc("HUP/TERM-immune process %d must not outlive the kill", pid).
+			True(awaitGone(pid, 10*time.Second))
+	}
+}
+
+// awaitPIDs polls for the pid file the stubborn shell writes at startup and
+// parses the space-separated pids in it.
+func awaitPIDs(g got.G, path string) []int {
+	deadline := time.Now().Add(10 * time.Second)
+
+	for {
+		if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
+			pids := make([]int, 0, 2) // the file holds "$$ $!"
+
+			for f := range strings.FieldsSeq(string(b)) {
+				pid, perr := strconv.Atoi(f)
+				g.E(perr)
+
+				pids = append(pids, pid)
+			}
+
+			return pids
+		}
+
+		if time.Now().After(deadline) {
+			g.Fatal("the shell never wrote its pids")
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// awaitGone reports whether pid stops existing before the timeout. Signal 0
+// probes existence; the pid lingers as a zombie until the daemon reaps it, so
+// existence is polled rather than checked once.
+func awaitGone(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return true
+		}
+
+		if time.Now().After(deadline) {
+			return false
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // readExit reads frames until a MsgExit arrives, reporting whether it did.

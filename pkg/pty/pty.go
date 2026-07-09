@@ -85,3 +85,12 @@ func (t *PTY) Signal(sig os.Signal) error {
 
 	return t.cmd.Process.Signal(sig)
 }
+
+// PID returns the underlying process id, or 0 if the process never started.
+func (t *PTY) PID() int {
+	if t.cmd.Process == nil {
+		return 0
+	}
+
+	return t.cmd.Process.Pid
+}
