@@ -312,12 +312,12 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		// Keep the inline picker from swallowing the shell's prompt (see promptGuard).
 		guard := openMenuOverSession(curID)
 
-		res, err := showMenu(st, ctrl, status, curID, curName)
+		res, notices, err := showMenu(st, ctrl, status, curID, curName)
 		if err != nil {
 			return err
 		}
 
-		guard.restorePrompt()
+		guard.restorePrompt(notices)
 
 		status = ""
 
@@ -499,10 +499,58 @@ func openMenuOverSession(curID string) promptGuard {
 // the prompt itself is intact and resuming the session leaves the screen exactly
 // as it was, the way fzf does on esc. A switch or detach reuses the same restore;
 // the target's replay (or the launching shell) then takes the screen from there.
-func (g promptGuard) restorePrompt() {
-	if g.active {
-		_, _ = os.Stdout.Write([]byte("\x1b8")) // DECRC
+//
+// Notices the menu printed (renames) need more work: Bubble Tea inserts them
+// directly above its picker, and the guard put the picker below the prompt — so
+// they land between the prompt and the picker, where the resumed session's very
+// next output would overwrite them, with the cursor sitting confusingly one line
+// above them. So they are moved: the notice rows below the prompt are deleted,
+// blank rows are inserted above the prompt (pushing it down), the notices are
+// rewritten there, and the cursor ends back on the prompt — leaving the notices
+// in the scrollback above it, the same trail the attach/detach notices leave.
+// Everything is cursor-relative: only the terminal's DECSC register knows where
+// the prompt is.
+func (g promptGuard) restorePrompt(notices []string) {
+	if !g.active {
+		return
 	}
+
+	if len(notices) == 0 {
+		_, _ = os.Stdout.Write([]byte("\x1b8")) // DECRC
+
+		return
+	}
+
+	k := strconv.Itoa(len(notices))
+
+	var b strings.Builder
+
+	// The final cursor target — the prompt's row once the notices are inserted
+	// above it, at the prompt's original column — is re-saved (DECSC) before any
+	// line surgery: inserting and deleting lines moves the cursor to the first
+	// column on VT/xterm-family terminals, so the column only survives the
+	// surgery inside the terminal's save register.
+	b.WriteString("\x1b8")           // DECRC: onto the prompt row
+	b.WriteString("\x1b[" + k + "B") // down to where the prompt is about to land
+	b.WriteString("\x1b7")           // DECSC: re-save — the session resumes here
+	b.WriteString("\x1b[" + k + "A") // back up onto the prompt row
+	b.WriteString("\x1b[B")          // down onto the first notice row
+	b.WriteString("\x1b[" + k + "M") // delete the notice rows below the prompt
+	b.WriteString("\x1b[A")          // up onto the prompt row
+	b.WriteString("\x1b[" + k + "L") // insert blanks above it, pushing the prompt down
+	b.WriteString("\r")              // column 0 for the rewrite (IL may already have)
+
+	for i, n := range notices {
+		if i > 0 {
+			b.WriteString("\r\n")
+		}
+
+		b.WriteString(n)
+	}
+
+	b.WriteString("\x1b8") // DECRC: cursor right after the prompt
+
+	_, _ = os.Stdout.Write([]byte(b.String()))
 }
 
 // runInSession handles tm launched from inside a session's shell. The menu here
@@ -511,7 +559,7 @@ func (g promptGuard) restorePrompt() {
 // leaves this inner tm, dropping back into the session. There is no relay to run
 // in this process, so unlike runMenu it never attaches.
 func runInSession(ctrl *controller) error {
-	res, err := showMenu(ctrl.st, ctrl, "", "", "")
+	res, _, err := showMenu(ctrl.st, ctrl, "", "", "")
 	if err != nil {
 		return err
 	}
@@ -528,10 +576,12 @@ func runInSession(ctrl *controller) error {
 }
 
 // showMenu prunes dead sessions, runs the interactive menu once, and returns what
-// the user chose. A non-empty curID frames the menu as running inside that session
-// even though this process has no $TM_SESSION — runMenu uses it to reopen the menu
-// as in-session after Ctrl-\.
-func showMenu(st *store.Store, ctrl *controller, status, curID, curName string) (tui.Result, error) {
+// the user chose plus the notices the menu printed above its picker (renames),
+// which runMenu repositions when the menu sat over a session (see promptGuard).
+// A non-empty curID frames the menu as running inside that session even though
+// this process has no $TM_SESSION — runMenu uses it to reopen the menu as
+// in-session after Ctrl-\.
+func showMenu(st *store.Store, ctrl *controller, status, curID, curName string) (tui.Result, []string, error) {
 	_ = st.Prune(sessionLive)
 
 	m := tui.New(st, ctrl)
@@ -549,15 +599,15 @@ func showMenu(st *store.Store, ctrl *controller, status, curID, curName string) 
 
 	final, err := tea.NewProgram(m).Run()
 	if err != nil {
-		return tui.Result{}, err
+		return tui.Result{}, nil, err
 	}
 
 	model, ok := final.(tui.Model)
 	if !ok {
-		return tui.Result{}, nil
+		return tui.Result{}, nil, nil
 	}
 
-	return model.Result(), nil
+	return model.Result(), model.Notices(), nil
 }
 
 // sessionName resolves a session id to its name for the in-session header, or ""

@@ -211,6 +211,21 @@ func (v *vt) insertLines(n int) {
 	}
 }
 
+// deleteLines is CSI M: remove n rows at the cursor, pulling the rows below up
+// and blanking the bottom. The prompt guard uses it (with insertLines) to move
+// rename notices from below the prompt to above it.
+func (v *vt) deleteLines(n int) {
+	blank := v.blank()
+
+	for i := v.cr; i < v.rows; i++ {
+		if i+n < v.rows {
+			v.cur[i] = v.cur[i+n]
+		} else {
+			v.cur[i] = blank[i]
+		}
+	}
+}
+
 func (v *vt) put(ch rune) {
 	if v.cc >= v.cols {
 		v.cc = 0
@@ -320,7 +335,14 @@ func (v *vt) apply(params string, final byte) {
 	case 'J':
 		v.eraseDisplay(n(0, 0))
 	case 'L':
+		// IL and DL move the cursor to the first column on VT/xterm-family
+		// terminals (unlike RI, which keeps it — see reverseIndex). Modeled so a
+		// cursor position that only looks right without the reset can't pass.
 		v.insertLines(n(0, 1))
+		v.cc = 0
+	case 'M':
+		v.deleteLines(n(0, 1))
+		v.cc = 0
 	case 'K':
 		for j := v.cc; j < v.cols; j++ {
 			v.cur[v.cr][j] = ' '

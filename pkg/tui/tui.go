@@ -226,6 +226,13 @@ type Model struct {
 	// program exits and carries it out (attach, switch, or nothing).
 	result Result
 
+	// notices are the lines printed above the picker while this menu was open
+	// (renames). app.Run reads them via Notices after the program exits: a menu
+	// opened over a session draws below the shell's prompt, so tea.Println lands
+	// them below it too, where the resumed session would overwrite them — the
+	// caller repositions them above the prompt instead (see promptGuard).
+	notices []string
+
 	status string
 	quit   bool
 }
@@ -517,6 +524,11 @@ func (m Model) attach(id string, hist proto.HistMode, lines uint32) (Model, tea.
 // Result reports what the user resolved the menu to. It is meaningful once the
 // program has exited; app.Run reads it to attach, switch, or just leave tm.
 func (m Model) Result() Result { return m.result }
+
+// Notices reports the lines this menu printed above its picker (renames), in
+// order. Meaningful once the program has exited; app.Run uses them to fix the
+// notices' position when the menu was drawn over a live session's prompt.
+func (m Model) Notices() []string { return m.notices }
 
 // WithStatus returns the model with a status line set, used to carry a note
 // (e.g. a reaped dead session) into a freshly opened menu.
@@ -855,8 +867,14 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 
 		// Print the rename above the menu. tea.Println lands the line in the
 		// scrollback unmanaged by the program, so it survives the picker's redraws and
-		// its teardown — the same trail the attach/detach notices leave.
-		return m, tea.Println(attach.RenamedSessionNotice(old, val))
+		// its teardown — the same trail the attach/detach notices leave. Truncated to
+		// the terminal width so it occupies exactly one row: the caller repositions
+		// notice rows by count when this menu sits over a session (see Notices), so a
+		// wrapped line would throw that arithmetic off.
+		notice := ansi.Truncate(attach.RenamedSessionNotice(old, val), max(1, m.width-1), "…")
+		m.notices = append(m.notices, notice)
+
+		return m, tea.Println(notice)
 	case inputCustomLines:
 		n, err := strconv.Atoi(val)
 		if err != nil || n <= 0 {
