@@ -327,43 +327,38 @@ func runMenu(st *store.Store, ctrl *controller) error {
 			curName = sessionName(st, curID)
 		}
 
-		targetID, hist, lines, leave, toMenu := pickTarget(res, curID, curAlt)
-
-		resume := settlePaused(paused, targetID, curID, leave, toMenu)
-		if !resume {
+		// [kill session] aimed at the session this menu sits over: handled before
+		// pickTarget since it is neither an attach nor a plain way out — the session
+		// (and whatever of it is on this screen) is being ended deliberately.
+		if res.Action == tui.ActionKillCurrent {
+			next := killCurrentSession(ctrl, paused, curID, curName, curAlt)
 			paused = nil
+			curID, curName, curAlt, status = next.curID, next.curName, next.curAlt, next.status
+
+			continue
 		}
 
-		if toMenu {
-			// Detached from a session ([detach session] inside one): drop to the
-			// top-level menu with the session still running, rather than leaving tm.
-			// pickTarget already reset the terminal; note the detached session so it
-			// stays in the scrollback above the reopened menu (whose fresh line the
-			// notice's trailing newline also provides).
-			_, _ = os.Stdout.Write(attach.DetachedSessionNotice(curName))
+		targetID, hist, lines, leave, toMenu := pickTarget(res, curID, curAlt)
+
+		paused = settlePaused(paused, targetID, curID, leave, toMenu)
+
+		if toMenu || leave {
+			noteMenuExit(curName, toMenu)
+
+			if leave {
+				return nil
+			}
+
 			curID, curName, curAlt = "", "", false
 
 			continue
 		}
 
-		if leave {
-			// Left tm for the launching shell ([exit] / Ctrl-D, esc or top-level
-			// [detach session]). Note the departure so it stays in the scrollback.
-			_, _ = os.Stdout.Write(attach.ExitedNotice())
-
-			return nil
-		}
-
 		targetName := sessionName(st, targetID)
 		announceAttach(curID, targetID, targetName)
 
-		var (
-			outcome attach.Outcome
-			alt     bool
-			aerr    error
-		)
-
-		outcome, alt, paused, aerr = runOrResume(st, paused, resume, targetID, targetName, hist, lines)
+		outcome, alt, nowPaused, aerr := runOrResume(st, paused, targetID, targetName, hist, lines)
+		paused = nowPaused
 
 		next, done := afterRelay(st, ctrl, targetID, alt, outcome, paused, aerr)
 		if done {
@@ -417,32 +412,79 @@ func afterRelay(
 	}
 }
 
+// noteMenuExit writes the scrollback notice for the plain ways out of the menu
+// loop. Detaching from a session ([detach session] inside one) drops to the
+// top-level menu with the session still running rather than leaving tm —
+// pickTarget already reset the terminal, and the note keeps the detached
+// session's name in the scrollback above the reopened menu (whose fresh line
+// the notice's trailing newline also provides). Otherwise tm is left for the
+// launching shell ([exit] / Ctrl-D, esc or top-level [detach session]), and the
+// departure is noted so it stays in the scrollback.
+func noteMenuExit(curName string, toMenu bool) {
+	if toMenu {
+		_, _ = os.Stdout.Write(attach.DetachedSessionNotice(curName))
+
+		return
+	}
+
+	_, _ = os.Stdout.Write(attach.ExitedNotice())
+}
+
+// killCurrentSession ends the session the menu was framed inside and returns
+// the menu's next framing. Any replay paused on it is aborted first — the rest
+// of the history will never be shown, and holding the attachment would wedge
+// the daemon's teardown. On success the terminal is reset the way the
+// session-exited path does (the relay left the session's screen up for the
+// menu) and the kill is noted, so the top-level menu reopens on a clean screen
+// with the notice in the scrollback above it. On failure the session may still
+// be running, so the menu stays framed inside it with the reason in its header.
+func killCurrentSession(
+	ctrl *controller, paused *attach.Paused, curID, curName string, curAlt bool,
+) menuState {
+	if paused != nil {
+		paused.Abort()
+	}
+
+	if err := ctrl.KillSession(curID); err != nil {
+		return menuState{
+			curID: curID, curName: curName, curAlt: curAlt,
+			status: "failed to kill session: " + err.Error(),
+		}
+	}
+
+	_, _ = os.Stdout.Write(attach.RestoreFor(curAlt))
+	_, _ = os.Stdout.Write(attach.KilledCurrentSessionNotice(curName))
+
+	return menuState{}
+}
+
 // settlePaused decides whether the menu's outcome resumes a replay the menu key
-// paused (esc back into the same session), aborting the suspended attachment
-// when it does not: any other way out abandons the replay, so the daemon stops
-// streaming history that would never be shown.
-func settlePaused(paused *attach.Paused, targetID, curID string, leave, toMenu bool) bool {
+// paused (esc back into the same session), returning the attachment when it
+// does and aborting it otherwise: any other way out abandons the replay, so the
+// daemon stops streaming history that would never be shown. A non-nil result
+// therefore means "resume this" (see runOrResume).
+func settlePaused(paused *attach.Paused, targetID, curID string, leave, toMenu bool) *attach.Paused {
 	if paused == nil {
-		return false
+		return nil
 	}
 
 	if !leave && !toMenu && targetID == curID {
-		return true
+		return paused
 	}
 
 	paused.Abort()
 
-	return false
+	return nil
 }
 
 // runOrResume moves the relay onto targetID: continuing the paused replay on
-// its suspended attachment — right where it stopped — when the user chose to
-// resume, and dialing a fresh relay otherwise.
+// its suspended attachment — right where it stopped — when settlePaused kept
+// one, and dialing a fresh relay otherwise.
 func runOrResume(
-	st *store.Store, paused *attach.Paused, resume bool,
+	st *store.Store, paused *attach.Paused,
 	targetID, targetName string, hist proto.HistMode, lines uint32,
 ) (attach.Outcome, bool, *attach.Paused, error) {
-	if resume {
+	if paused != nil {
 		return paused.Resume()
 	}
 
@@ -569,6 +611,16 @@ func runInSession(ctrl *controller) error {
 		// can't be reached the user just stays put.
 		if serr := ctrl.Switch(res.ID, res.Hist, res.Lines); serr != nil {
 			fmt.Fprintln(os.Stderr, "tm: switch session:", serr)
+		}
+	}
+
+	if res.Action == tui.ActionKillCurrent {
+		// Killing the session this tm runs inside takes its shell — and with it
+		// this very process — down; the outer relay sees the session end and falls
+		// back to its menu. Error reporting is best-effort: on success this process
+		// is usually gone before KillSession even returns.
+		if kerr := ctrl.KillSession(res.ID); kerr != nil {
+			fmt.Fprintln(os.Stderr, "tm: kill session:", kerr)
 		}
 	}
 

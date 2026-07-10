@@ -63,3 +63,11 @@ func RenamedSessionNotice(old, name string) string {
 func KilledSessionNotice(name string) string {
 	return noticeLine("[tm killed session ", name, "]")
 }
+
+// KilledCurrentSessionNotice is KilledSessionNotice for when [kill session] ends
+// the session the menu was opened over: the menu has already quit (the relay is
+// torn down around the kill), so the notice is written straight to the terminal
+// like the attach/detach notices, before the top-level menu redraws.
+func KilledCurrentSessionNotice(name string) []byte {
+	return notice("[tm killed session ", name, "]")
+}

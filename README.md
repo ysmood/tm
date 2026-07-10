@@ -51,8 +51,12 @@ switching and detaching, so the change stays in your scrollback.
 The command is `[kill session]`. You just type words like `kill`, `ks`, `[k`, etc. and hit enter.
 
 Pick the session to kill: its shell is terminated and the session — scrollback and all — is removed
-from the list. The session you are currently inside is not offered; to end it, just exit its shell.
-A session whose background process has already died is simply cleared from the list.
+from the list. A session whose background process has already died is simply cleared from the list.
+
+The session you are currently inside is offered too, marked `current` — handy when its shell is
+stuck. Killing it ends what is on your terminal along with it and drops you back to the top-level
+menu (a `tm` run from inside the session goes down with the shell, and the outer terminal falls
+back to the menu the same way).
 
 tm then prints `[tm killed session <name>]` above the menu, so the change stays in your scrollback.
 

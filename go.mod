@@ -9,6 +9,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/muesli/cancelreader v0.2.2
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/ysmood/got v0.43.0
 	golang.org/x/sys v0.46.0
@@ -27,7 +28,6 @@ require (
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
-	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect

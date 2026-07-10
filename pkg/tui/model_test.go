@@ -374,10 +374,12 @@ func TestModelKillSession(t *testing.T) {
 	g.Has(printed, "doomed")
 }
 
-// The kill chooser leaves out the session this tm is running inside — killing it
-// would cut the terminal out from under the relay, and exiting its shell already
-// ends it — while other sessions are listed.
-func TestModelKillSessionExcludesCurrent(t *testing.T) {
+// The kill chooser keeps the session this tm is running inside — marked
+// "current" — and selecting it resolves to ActionKillCurrent instead of killing
+// inline: ending the current session takes the screen with it, so app.Run tears
+// the relay down around the kill. Other sessions still kill inline (the menu
+// stays open).
+func TestModelKillCurrentSession(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
 	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
@@ -387,13 +389,41 @@ func TestModelKillSessionExcludesCurrent(t *testing.T) {
 	m = send(typeStr(m, "ks"), keyEnterMsg)
 
 	g.Eq(m.pickFor, pickKillSession)
-	g.Len(m.pick.all, 1)
-	g.Eq(m.pick.all[0].text, "other")
+	g.Len(m.pick.all, 2) // both listed, the current one marked
+
+	var curHint string
+
+	for _, it := range m.pick.all {
+		if p, ok := it.payload.(killPayload); ok && p.id == "cur" {
+			curHint = it.hint
+		}
+	}
+
+	g.Eq(curHint, "current")
+
+	// Filter down to the current session and select it: the menu quits with
+	// ActionKillCurrent for app.Run to carry out — nothing is killed inline.
+	m = typeStr(m, "current")
+
+	next, cmd := m.Update(keyEnterMsg)
+	final := next.(Model)
+
+	g.True(final.quit)
+	g.Eq(final.Result().Action, ActionKillCurrent)
+	g.Eq(final.Result().ID, "cur")
+	g.NotNil(cmd)
+
+	_, isQuit := cmd().(tea.QuitMsg)
+	g.True(isQuit)
+
+	// The store is untouched: the kill happens after the relay teardown.
+	_, err := st.GetSession("cur")
+	g.E(err)
 }
 
-// With no sessions to kill the command says so instead of opening an empty
-// chooser — including when the only session is the one this tm is inside, which
-// the chooser leaves out.
+// With no sessions in the namespace the command says so instead of opening an
+// empty chooser; the current session alone is enough to open it (killing the
+// session you are inside is supported).
 func TestModelKillSessionNoSessions(t *testing.T) {
 	g := got.T(t)
 
@@ -405,8 +435,8 @@ func TestModelKillSessionNoSessions(t *testing.T) {
 	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
 
 	in := send(typeStr(New(st, sessCtrl{id: "cur", name: "current"}), "ks"), keyEnterMsg)
-	g.Eq(in.pickFor, pickMenu)
-	g.Has(in.headerTitle(), "no sessions to kill")
+	g.Eq(in.pickFor, pickKillSession)
+	g.Len(in.pick.all, 1)
 }
 
 // failKillCtrl simulates a kill the controller could not carry out.

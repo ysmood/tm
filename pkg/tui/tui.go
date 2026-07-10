@@ -74,6 +74,12 @@ const (
 	// session still running. Unlike ActionNone (esc/Ctrl-C/Ctrl-D) it never resumes
 	// the current session, so [exit] leaves tm even from a menu opened mid-session.
 	ActionExit
+	// ActionKillCurrent is [kill session] aimed at the session this menu is framed
+	// inside (Result.ID). Unlike killing a background session — done inline while
+	// the menu stays open — ending the current one takes the screen (and, for a tm
+	// run from within the session's shell, this very process) with it, so the menu
+	// quits and app.Run tears the relay down around the kill.
+	ActionKillCurrent
 )
 
 // Result is the menu's outcome: what to do and the chosen session's replay.
@@ -156,6 +162,11 @@ type renamePayload struct{ id, name string }
 // killPayload is the data attached to a kill-chooser row: the session to end,
 // and its name for the notice printed afterwards.
 type killPayload struct{ id, name string }
+
+// currentHint marks the session this menu is framed inside in choosers that
+// keep it (the kill chooser), so picking it — which also ends what is on this
+// terminal — is a deliberate act.
+const currentHint = "current"
 
 // scrollbackPayload is the data attached to a scrollback-chooser row.
 type scrollbackPayload struct {
@@ -389,29 +400,30 @@ func (m *Model) showRenameSessions() bool {
 }
 
 // showKillSessions lists the sessions [kill session] can target, and reports
-// false when there are none, so the caller says so rather than opening an empty
-// picker. Like the main attach list it leaves out the session this tm is running
-// inside: killing it would cut the terminal out from under the relay showing it,
-// and exiting its shell already ends it.
+// false when the namespace holds none, so the caller says so rather than opening
+// an empty picker. Unlike the main attach list it keeps the session this tm is
+// running inside — marked "current", since killing it also ends what is on this
+// terminal (see ActionKillCurrent) — so a stuck shell can be put down without
+// leaving it first.
 func (m *Model) showKillSessions() bool {
 	sessions, _ := m.st.ListByNamespace(m.ns)
+	if len(sessions) == 0 {
+		return false
+	}
 
 	items := make([]pickerItem, 0, len(sessions))
 
 	for _, s := range sessions {
-		if s.ID == m.curSessionID {
-			continue
-		}
-
-		items = append(items, pickerItem{
+		item := pickerItem{
 			label:   m.sessionLabel(s),
 			text:    s.Name,
 			payload: killPayload{id: s.ID, name: s.Name},
-		})
-	}
+		}
+		if s.ID == m.curSessionID {
+			item.hint = currentHint
+		}
 
-	if len(items) == 0 {
-		return false
+		items = append(items, item)
 	}
 
 	m.mode = modePick
@@ -674,8 +686,8 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 			m.status = "no sessions to rename"
 		}
 	case cmdKillSession:
-		// Pick the session to kill first, unless there is nothing to kill (the
-		// current session doesn't count — exiting its shell ends it).
+		// Pick the session to kill first, unless the namespace is empty — then
+		// there is nothing to pick.
 		if !m.showKillSessions() {
 			m.status = "no sessions to kill"
 		}
@@ -725,7 +737,18 @@ func (m Model) selectScrollback(p scrollbackPayload) (tea.Model, tea.Cmd) {
 // then returns to the main list — rebuilt, so the session is gone from it — and
 // the kill is printed above the picker (like a rename), where it stays in the
 // scrollback.
+//
+// The session this menu is framed inside is the exception: killing it also ends
+// what this terminal is showing, so instead of killing inline the menu quits
+// with ActionKillCurrent and app.Run tears the relay down around the kill.
 func (m Model) killSession(p killPayload) (tea.Model, tea.Cmd) {
+	if p.id == m.curSessionID {
+		m.result = Result{Action: ActionKillCurrent, ID: p.id}
+		m.quit = true
+
+		return m, tea.Quit
+	}
+
 	if err := m.ctrl.KillSession(p.id); err != nil {
 		m.status = "failed to kill session: " + err.Error()
 		m.showMenu()
@@ -1059,7 +1082,7 @@ func (m Model) viewHelp() string {
 		{"<session>", switchHint},
 		{"[new session]", "create and start a new session"},
 		{"[rename session]", "rename a session; it keeps running"},
-		{"[kill session]", "end a session's shell and delete it"},
+		{"[kill session]", "end a session's shell and delete it (the current one too)"},
 		{"[detach session]", "detach back to the menu; the session keeps running"},
 		{"[exit]", "leave tm; every session keeps running"},
 		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},

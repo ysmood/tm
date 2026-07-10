@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/muesli/cancelreader"
 	"github.com/ysmood/tm/pkg/config"
 	"github.com/ysmood/tm/pkg/proto"
 	"golang.org/x/term"
@@ -151,8 +152,29 @@ func Run(p config.Paths, id string, opt Options) (Outcome, bool, *Paused, error)
 	in, closeIn := openInput()
 	defer closeIn()
 
-	return runRelay(opt, in, os.Stdout, int(in.Fd()), true,
+	rd, cancel := cancelInput(in)
+	defer cancel()
+
+	return runRelay(opt, rd, os.Stdout, int(in.Fd()), true,
 		func(sid string) string { return proto.SockAddr(p, sid) }, id, nil)
+}
+
+// cancelInput wraps the relay's input so its pending read can be canceled once
+// the relay stops. The input reader blocks in a read between keystrokes, and a
+// relay can end without any input arriving — the session's shell exiting (or
+// being killed) — which would leave that read pending. macOS cannot poll
+// /dev/tty, so closing the file does not unblock it either; the leftover reader
+// would then steal keystrokes from the menu that opens next and forward them to
+// the dead session. cancelreader falls back to select(2) there, which cancels
+// cleanly and never holds a consuming read while idle. If wrapping fails, the
+// plain file is used and cancellation is a no-op.
+func cancelInput(f *os.File) (io.Reader, func()) {
+	cr, err := cancelreader.NewReader(f)
+	if err != nil {
+		return f, func() {}
+	}
+
+	return cr, func() { _ = cr.Cancel() }
 }
 
 // relay holds the state shared across a relay's session iterations: a single
@@ -382,7 +404,10 @@ func (p *Paused) Resume() (Outcome, bool, *Paused, error) {
 	in, closeIn := openInput()
 	defer closeIn()
 
-	return runRelay(p.opt, in, os.Stdout, int(in.Fd()), true, p.addrOf, p.id, p)
+	rd, cancel := cancelInput(in)
+	defer cancel()
+
+	return runRelay(p.opt, rd, os.Stdout, int(in.Fd()), true, p.addrOf, p.id, p)
 }
 
 // Abort abandons the paused attachment instead of resuming it: closing the

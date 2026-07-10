@@ -97,10 +97,16 @@ func TestRenameFromSessionKeepsCursor(t *testing.T) {
 	g.True(waitForText(buf, "CURSOR-BASE-MARK", 10*time.Second))
 
 	// Ctrl-\ opens the menu over the session; rename twice — aaa -> aaa-zzz ->
-	// aaa-zzz-yyy — so BOTH notice rows must be relocated; esc resumes.
+	// aaa-zzz-yyy — so BOTH notice rows must be relocated; esc resumes. The menu
+	// wait must match fresh output only: "[rename session]" already sits in the
+	// buffer from the first top-level menu, and typing into a menu that has not
+	// rendered yet races its startup.
+	menuMark := len(buf.String())
+
 	_, err = pt.Write([]byte{0x1c})
 	g.E(err)
-	g.True(waitForText(buf, "[rename session]", 10*time.Second))
+	g.True(waitForTextFrom(buf, menuMark, "[rename session]", 10*time.Second))
+	time.Sleep(300 * time.Millisecond)
 
 	rename := func(suffix, want string) {
 		g.Helper()
@@ -164,7 +170,7 @@ func TestRenameFromSessionKeepsCursor(t *testing.T) {
 	// prompt, not at the start of the line — so the resumed command carries the
 	// same shell prompt prefix as the one typed before the menu opened.
 	prefixOf := func(marker string) (string, bool) {
-		for _, l := range strings.Split(screen, "\n") {
+		for l := range strings.SplitSeq(screen, "\n") {
 			if i := strings.Index(l, "echo "+marker); i >= 0 {
 				return l[:i], true
 			}
