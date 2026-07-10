@@ -12,6 +12,7 @@
 package tui
 
 import (
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -1090,8 +1091,34 @@ func (m Model) viewHelp() string {
 		{"[help]", "show this help"},
 	})
 
+	version, repo := buildInfo()
+	section("About", [][2]string{
+		{"version", version},
+		{"repo", repo},
+	})
+
 	return m.box("tm — help", []string{strings.TrimRight(b.String(), "\n")}) +
 		"\n" + th.dim.Render("press any key to go back")
+}
+
+// buildInfo reports the module version and GitHub repo URL recorded in the
+// binary at build time, via debug.ReadBuildInfo. Go stamps the version from the
+// VCS tag for `go install`ed builds; a plain `go build` from a checkout reports
+// "(devel)". The repo URL is derived from the main module path.
+func buildInfo() (version, repo string) {
+	version, repo = "unknown", "https://github.com/ysmood/tm"
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version, repo
+	}
+	if info.Main.Version != "" {
+		version = info.Main.Version
+	}
+	if info.Main.Path != "" {
+		repo = "https://" + info.Main.Path
+	}
+	return version, repo
 }
 
 // viewInput frames the active free-text prompt (naming a session, a custom line
