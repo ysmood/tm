@@ -2,6 +2,8 @@
 
 A light weight terminal multiplexer manager. It allows you to use each session just like a normal shell. Unlike tmux or screen, no need to use complex key-bindings to scroll through panes or windows. It's designed to be simple and easy to use for modern terminal applications.
 
+<img width="600" alt="Image" src="https://github.com/user-attachments/assets/d5caa2e7-8698-4a6b-a64f-3452067e2b5c" />
+
 ## Installation
 
 ```bash
