@@ -382,7 +382,7 @@ type menuState struct {
 // reports that local input ended (the terminal went away), so tm should leave.
 //
 // A relay error means the daemon was unreachable (a dead session): reap it so
-// it stops reappearing in the menu — otherwise reselecting it bounces back
+// it stops reappearing in the menu — otherwise re-selecting it bounces back
 // forever — and note it on the reopened top-level menu. OutcomeMenu (Ctrl-\)
 // reopens the menu framed as in-session, so esc resumes and a pick switches,
 // remembering whether the session left the terminal on the alt screen so a
@@ -390,7 +390,10 @@ type menuState struct {
 // key landed mid-history-replay, which the status says (esc then resumes the
 // replay). OutcomeSessionExited falls back to the top-level menu — the session
 // is gone and its relay already reset the terminal — so the user can pick or
-// start another session instead of leaving tm.
+// start another session instead of leaving tm. OutcomeInterrupted (Ctrl-C
+// mid-history-replay) likewise falls back to the top-level menu, but the
+// session is still running: the user aborted loading its history, so they can
+// re-enter it (perhaps with less history) or pick another one.
 func afterRelay(
 	st *store.Store, ctrl *controller, targetID string, alt bool,
 	outcome attach.Outcome, paused *attach.Paused, aerr error,
@@ -407,6 +410,11 @@ func afterRelay(
 		return next, false
 	case outcome == attach.OutcomeSessionExited:
 		return menuState{}, false
+	case outcome == attach.OutcomeInterrupted:
+		// Ctrl-C mid-history-replay: the relay aborted the replay (the session
+		// keeps running) and already reset the terminal, so fall back to the
+		// top-level menu like a session exit, noting why.
+		return menuState{status: "history replay canceled"}, false
 	default:
 		return menuState{}, true
 	}

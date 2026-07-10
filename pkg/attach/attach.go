@@ -26,6 +26,14 @@ import (
 // up. Run reports the press to its caller, which reopens the menu and re-attaches.
 const DefaultMenuKey = 0x1c
 
+// InterruptKey is Ctrl-C (0x03). During a history replay it aborts the loading:
+// the relay drops the attachment (the session keeps running, the daemon stops
+// streaming the rest of the history) and returns OutcomeInterrupted so the
+// caller falls back to the top-level menu. Once the replay has finished it is
+// ordinary input, forwarded to the session like any other key (the shell's
+// SIGINT).
+const InterruptKey = 0x03
+
 // Leaving a session returns the local terminal to a sane baseline. A session's
 // PTY has its own terminal state, independent of the outer terminal's: a
 // full-screen program run inside it (vim, less, htop, a git pager, any TUI)
@@ -130,6 +138,12 @@ const (
 	// the relay), so the session is gone. The caller returns to the top-level menu
 	// rather than leaving tm, so the user can pick or start another session.
 	OutcomeSessionExited
+	// OutcomeInterrupted means the user pressed Ctrl-C during a history replay:
+	// the replay was aborted (the session keeps running, the rest of the history
+	// is never loaded) and the attachment dropped. The caller returns to the
+	// top-level menu, so the user can re-enter the session with less history or
+	// pick another one.
+	OutcomeInterrupted
 )
 
 // Run connects to the session id under p, switches the terminal to raw mode, and
@@ -192,6 +206,12 @@ type relay struct {
 	// channel synchronizes with, so a plain Load sees the right value.
 	menu atomic.Bool
 
+	// interrupt records that input ended because the user pressed Ctrl-C during a
+	// history replay (see InterruptKey), so the caller aborts the replay instead
+	// of opening the menu. Like menu, it is set just before the input-ended
+	// channel closes.
+	interrupt atomic.Bool
+
 	// alt records whether the current session has the outer terminal in the
 	// alternate screen buffer, tracked from the forwarded output. It decides whether
 	// leaving the session must send altScreenExit (which would drop scrollback if the
@@ -231,6 +251,7 @@ func relayFor(opt Options, resume *Paused) *relay {
 
 	r := resume.r
 	r.menu.Store(false)
+	r.interrupt.Store(false)
 	r.pauseReq.Store(false)
 
 	return r
@@ -358,6 +379,10 @@ func rawTerminal(inFd int) (func(out io.Writer, outcome Outcome, curName string,
 			_, _ = out.Write(ExitedSessionNotice(curName))
 		}
 
+		if outcome == OutcomeInterrupted && curName != "" {
+			_, _ = out.Write(CanceledReplayNotice(curName))
+		}
+
 		_ = term.Restore(inFd, old)
 	}, nil
 }
@@ -416,12 +441,12 @@ func (p *Paused) Resume() (Outcome, bool, *Paused, error) {
 func (p *Paused) Abort() { _ = p.nc.Close() }
 
 // session runs one attachment: it dials addr, attaches, and proxies output until
-// input ends (the menu key or the local input closing), the session exits, or the
-// session asks the relay to switch. A non-nil cur skips the dial and continues
-// that paused attachment instead. It returns a non-nil SwitchTarget only for a
-// switch and a non-nil Paused only for the menu key mid-replay (the Outcome is
-// OutcomeMenu then, with the attachment left suspended for Resume or Abort);
-// otherwise the Outcome says why it stopped.
+// input ends (the menu key, Ctrl-C mid-replay, or the local input closing), the
+// session exits, or the session asks the relay to switch. A non-nil cur skips the
+// dial and continues that paused attachment instead. It returns a non-nil
+// SwitchTarget only for a switch and a non-nil Paused only for the menu key
+// mid-replay (the Outcome is OutcomeMenu then, with the attachment left suspended
+// for Resume or Abort); otherwise the Outcome says why it stopped.
 func (r *relay) session(
 	addr string, opt Options, out io.Writer, ended <-chan struct{}, cur *Paused,
 ) (*proto.SwitchTarget, Outcome, *Paused, error) {
@@ -456,16 +481,23 @@ func (r *relay) session(
 
 	select {
 	case <-ended:
-		// The menu key mid-replay pauses instead of detaching: park the pump at its
-		// next check — kicking a Read-blocked pump with an immediate deadline — and
-		// wait for it to stop writing, so the menu never races leftover history onto
-		// the screen. The daemon, unread, stalls mid-replay on socket backpressure.
+		// Ctrl-C mid-replay aborts the loading: park the pump so no leftover
+		// history races onto the screen after the terminal reset, then drop the
+		// attachment — the deferred close makes the daemon's next replay write
+		// fail, so it never loads the rest of the history (see Paused.Abort) —
+		// while the session keeps running. The caller falls back to the top-level
+		// menu.
+		if r.interrupt.Load() {
+			r.park(nc, pump)
+
+			return nil, OutcomeInterrupted, nil, nil
+		}
+
+		// The menu key mid-replay pauses instead of detaching: park the pump so
+		// the menu never races leftover history onto the screen. The daemon,
+		// unread, stalls mid-replay on socket backpressure.
 		if r.menu.Load() && r.replaying.Load() {
-			r.pauseReq.Store(true)
-
-			_ = nc.SetReadDeadline(time.Now())
-
-			if res := <-pump; res.paused {
+			if res := r.park(nc, pump); res.paused {
 				_ = nc.SetReadDeadline(time.Time{}) // rearm reads for Resume
 
 				closeConn = false
@@ -497,6 +529,17 @@ func (r *relay) session(
 
 		return nil, OutcomeSessionExited, nil, nil
 	}
+}
+
+// park asks pumpOutput to stop at its next check — kicking a Read-blocked pump
+// with an immediate read deadline — and waits for it, so nothing more is
+// written to the terminal after it returns.
+func (r *relay) park(nc net.Conn, pump <-chan pumpResult) pumpResult {
+	r.pauseReq.Store(true)
+
+	_ = nc.SetReadDeadline(time.Now())
+
+	return <-pump
 }
 
 // dialSession dials addr and sends the attach request, returning the framed
@@ -668,12 +711,12 @@ func (r *relay) resetAlt() {
 
 // inputLoop reads local input for the relay's whole lifetime and forwards it to
 // the current session connection, which swaps as the relay switches sessions. On
-// the menu key it forwards any bytes before the key, flags the menu, signals end,
-// and stops; it also stops (signalling end, without the flag) when input closes.
-// Running it once — rather than per session — keeps a single reader on the
-// terminal so switching never leaves a second reader stealing keystrokes. It waits
-// for the first connection before reading, so early keystrokes aren't dropped
-// before the relay has attached.
+// a stop key (see stopIndex) it forwards any bytes before the key, flags which
+// key it was, signals end, and stops; it also stops (signalling end, with no
+// flag) when input closes. Running it once — rather than per session — keeps a
+// single reader on the terminal so switching never leaves a second reader
+// stealing keystrokes. It waits for the first connection before reading, so
+// early keystrokes aren't dropped before the relay has attached.
 func (r *relay) inputLoop(in io.Reader, ended <-chan struct{}, onEnd func()) {
 	select {
 	case <-r.ready:
@@ -685,24 +728,10 @@ func (r *relay) inputLoop(in io.Reader, ended <-chan struct{}, onEnd func()) {
 
 	for {
 		n, err := in.Read(buf)
-		if n > 0 {
-			data := buf[:n]
-			if i := bytes.IndexByte(data, r.menuKey); i >= 0 {
-				if i > 0 {
-					if c := r.curConn(); c != nil {
-						_ = c.Write(proto.MsgInput, data[:i])
-					}
-				}
+		if n > 0 && r.forwardInput(buf[:n]) {
+			onEnd()
 
-				r.menu.Store(true) // the menu key ended input, not a closed pipe
-				onEnd()
-
-				return
-			}
-
-			if c := r.curConn(); c != nil {
-				_ = c.Write(proto.MsgInput, data)
-			}
+			return
 		}
 
 		if err != nil {
@@ -711,6 +740,59 @@ func (r *relay) inputLoop(in io.Reader, ended <-chan struct{}, onEnd func()) {
 			return
 		}
 	}
+}
+
+// forwardInput handles one chunk of local input: it forwards it to the current
+// session connection, stopping at a stop key (see stopIndex) — the bytes before
+// the key are still forwarded, and the flag for the key is set before the
+// caller signals end, so the ended-channel reader sees it. It reports whether
+// the input loop should stop.
+func (r *relay) forwardInput(data []byte) (stop bool) {
+	i, interrupt := r.stopIndex(data)
+	if i < 0 {
+		r.sendInput(data)
+
+		return false
+	}
+
+	if i > 0 {
+		r.sendInput(data[:i])
+	}
+
+	if interrupt {
+		r.interrupt.Store(true)
+	} else {
+		r.menu.Store(true)
+	}
+
+	return true
+}
+
+// sendInput forwards local input bytes to the current session connection,
+// dropping them when no session is attached yet.
+func (r *relay) sendInput(data []byte) {
+	if c := r.curConn(); c != nil {
+		_ = c.Write(proto.MsgInput, data)
+	}
+}
+
+// stopIndex finds the first byte of data that ends the input loop: the menu key
+// always does; Ctrl-C does only while a history replay is streaming, where it
+// aborts the loading instead of reaching the session (interrupt reports that
+// case). Live, Ctrl-C is ordinary input — the shell's SIGINT — and is forwarded
+// like any other key. It returns -1 when nothing in data stops the loop.
+func (r *relay) stopIndex(data []byte) (i int, interrupt bool) {
+	i = bytes.IndexByte(data, r.menuKey)
+
+	if !r.replaying.Load() {
+		return i, false
+	}
+
+	if ci := bytes.IndexByte(data, InterruptKey); ci >= 0 && (i < 0 || ci < i) {
+		return ci, true
+	}
+
+	return i, false
 }
 
 func terminalSize() (int, int) {

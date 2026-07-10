@@ -48,6 +48,13 @@ func ExitedNotice() []byte { return notice("[tm exited]", "", "") }
 // running in the background.
 func DetachedSessionNotice(name string) []byte { return notice("[tm detached session ", name, "]") }
 
+// CanceledReplayNotice is shown when Ctrl-C aborts session name's history
+// replay: the rest of the history is never loaded and tm drops back to the
+// top-level menu, with the session still running in the background.
+func CanceledReplayNotice(name string) []byte {
+	return notice("[tm canceled loading session ", name, "]")
+}
+
 // RenamedSessionNotice is shown after [rename session] renames old to name. It
 // names both sides of the change, since neither alone identifies what happened.
 // Unlike the others it is a string, not bytes: the menu is still on screen when a

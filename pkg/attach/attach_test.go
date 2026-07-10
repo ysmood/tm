@@ -467,6 +467,109 @@ func TestRelayPausedReplayAbort(t *testing.T) {
 	g.False(strings.Contains(out.String(), string(tail)))
 }
 
+// Ctrl-C during a history replay aborts the loading: the relay returns
+// OutcomeInterrupted with nothing to resume, the daemon side sees the
+// connection drop (so it stops loading history), and the withheld tail is
+// never rendered.
+func TestRelayInterruptsReplay(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(15 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmin")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+
+	addr := filepath.Join(rt, "s.sock")
+	head, tail := []byte("HEAD-OF-HISTORY\n"), []byte("TAIL-NEVER-SHOWN\n")
+
+	more, closed := replayServer(g, addr, head, tail)
+
+	inR, inW := io.Pipe()
+	out := &safeBuf{}
+
+	done := make(chan relayExit, 1)
+
+	go func() {
+		oc, _, p, rerr := runRelay(Options{Hist: proto.HistAll}, inR, out, 0, false,
+			func(string) string { return addr }, "x", nil)
+		done <- relayExit{outcome: oc, paused: p, err: rerr}
+	}()
+
+	g.True(waitFor(func() bool { return strings.Contains(out.String(), string(head)) }, 5*time.Second))
+
+	_, err = inW.Write([]byte{InterruptKey})
+	g.E(err)
+
+	select {
+	case res := <-done:
+		g.E(res.err)
+		g.Eq(res.outcome, OutcomeInterrupted)
+		g.Desc("Ctrl-C aborts the attachment, it never suspends").Nil(res.paused)
+	case <-time.After(5 * time.Second):
+		g.Logf("relay did not return after Ctrl-C mid-replay")
+		g.FailNow()
+	}
+
+	// Even once the server tries to send the rest, its writes fail against the
+	// closed connection and the tail never reaches the screen.
+	close(more)
+	g.True(waitFor(closed, 5*time.Second))
+	g.False(strings.Contains(out.String(), string(tail)))
+}
+
+// Once the replay is done Ctrl-C is ordinary input again: it is forwarded to
+// the session (the shell's SIGINT) instead of ending the relay.
+func TestRelayForwardsCtrlCWhenLive(t *testing.T) {
+	g := got.T(t)
+	g.PanicAfter(10 * time.Second)
+
+	rt, err := os.MkdirTemp("/tmp", "tmcc")
+	g.E(err)
+	g.Cleanup(func() { _ = os.RemoveAll(rt) })
+
+	addr := filepath.Join(rt, "s.sock")
+
+	detached := echoServer(g, addr)
+
+	inR, inW := io.Pipe()
+	out := &safeBuf{}
+
+	done := make(chan relayExit, 1)
+
+	go func() {
+		oc, _, p, rerr := runRelay(Options{Hist: proto.HistNone}, inR, out, 0, false,
+			func(string) string { return addr }, "x", nil)
+		done <- relayExit{outcome: oc, paused: p, err: rerr}
+	}()
+
+	// The echoed ping proves the relay has processed MsgReplayDone (the server
+	// sends it before echoing), so the Ctrl-C below lands on a live session.
+	_, err = inW.Write([]byte("ping"))
+	g.E(err)
+	g.True(waitFor(func() bool { return strings.Contains(out.String(), "ping") }, 5*time.Second))
+
+	_, err = inW.Write([]byte{InterruptKey})
+	g.E(err)
+	g.True(waitFor(func() bool {
+		return strings.Contains(out.String(), string([]byte{InterruptKey}))
+	}, 5*time.Second))
+
+	// The relay is still up; the menu key ends it as usual.
+	_, err = inW.Write([]byte{DefaultMenuKey})
+	g.E(err)
+
+	select {
+	case res := <-done:
+		g.E(res.err)
+		g.Eq(res.outcome, OutcomeMenu)
+	case <-time.After(5 * time.Second):
+		g.Logf("relay did not return after menu key")
+		g.FailNow()
+	}
+
+	g.True(waitFor(detached, 5*time.Second))
+}
+
 // throttledBuf slows each write down, standing in for a real terminal —
 // rendering is the slow side of the relay — so a multi-megabyte replay cannot
 // finish before the test pauses it.
