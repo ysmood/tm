@@ -614,13 +614,13 @@ func mustGet(g got.G, st *store.Store, id string) store.Session {
 	return s
 }
 
-// Selecting [detach session] quits the menu via ActionDetach; app.Run then
-// returns to the top-level menu (the session keeps running). The dedicated action
-// lets a menu opened mid-session with Ctrl-\ tell "detach to the menu" apart from
-// a plain esc, which resumes the session.
+// Selecting [detach session] from a menu framed inside a session quits it via
+// ActionDetach; app.Run then returns to the top-level menu (the session keeps
+// running). The dedicated action lets a menu opened mid-session with Ctrl-\
+// tell "detach to the menu" apart from a plain esc, which resumes the session.
 func TestModelDetachSessionQuits(t *testing.T) {
 	g := got.T(t)
-	m := New(newStore(g, t), fakeCtrl{})
+	m := New(newStore(g, t), sessCtrl{id: "cur", name: "work"})
 
 	m = typeStr(m, "ds")
 	next, cmd := m.Update(keyEnterMsg)
@@ -631,6 +631,19 @@ func TestModelDetachSessionQuits(t *testing.T) {
 	g.NotNil(cmd)
 	_, ok := cmd().(tea.QuitMsg)
 	g.True(ok)
+}
+
+// The top-level menu offers no [detach session] — there is no session to detach
+// from, and leaving tm is [exit]'s job — while a menu framed inside a session
+// keeps the row.
+func TestModelDetachHiddenAtTopLevel(t *testing.T) {
+	g := got.T(t)
+
+	top := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	g.True(!strings.Contains(top.View().Content, "[detach session]"))
+
+	in := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	g.Has(in.View().Content, "[detach session]")
 }
 
 // [exit] leaves tm from anywhere via ActionExit, selected from the list. Unlike
@@ -676,45 +689,56 @@ func TestModelCtrlDIsEOF(t *testing.T) {
 	g.True(!sub.quit)
 }
 
-// [exit]'s hint reacts to the filter: on an empty query both esc and Ctrl-D (EOF)
-// end the menu, so both are shown; once a query is typed Ctrl-D is a no-op, so
-// only esc remains. Opened over a session, esc/Ctrl-D resume, so no hint at all.
+// [exit]'s hint reacts to the filter: on an empty query Ctrl-\, esc and Ctrl-D
+// (EOF) all end the menu, so all are shown; once a query is typed Ctrl-D is a
+// no-op, so Ctrl-\ and esc remain. Opened over a session, esc/Ctrl-D resume and
+// Ctrl-\ belongs to [detach session], so no hint at all.
 func TestModelExitHintReactive(t *testing.T) {
 	g := got.T(t)
 
-	// Empty top-level filter: both keys advertised.
+	// Empty top-level filter: all three keys advertised.
 	m := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
-	g.Has(m.View().Content, "esc or Ctrl-D")
+	g.Has(m.View().Content, "Ctrl-\\, esc or Ctrl-D")
 
-	// Typing hides Ctrl-D's EOF, leaving esc alone on the [exit] row.
+	// Typing hides Ctrl-D's EOF, leaving Ctrl-\ and esc on the [exit] row.
 	m = typeStr(m, "exit")
 	v := m.View().Content
 	g.Has(v, "[exit]")
-	g.Has(v, "esc")
+	g.Has(v, "Ctrl-\\ or esc")
 	g.True(!strings.Contains(v, "Ctrl-D"))
 
-	// Deleting back to an empty filter restores both.
+	// Deleting back to an empty filter restores all three.
 	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	g.Has(m.View().Content, "esc or Ctrl-D")
+	g.Has(m.View().Content, "Ctrl-\\, esc or Ctrl-D")
 
 	// Opened over a session, esc and Ctrl-D resume, so [exit] shows no key hint.
-	inSess := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), tea.WindowSizeMsg{Width: 80, Height: 24}).View().Content
+	inSess := send(
+		New(newStore(g, t), sessCtrl{id: "cur", name: "work"}),
+		tea.WindowSizeMsg{Width: 80, Height: 24},
+	).View().Content
 	g.Has(inSess, "[exit]")
 	g.True(!strings.Contains(inSess, "esc"))
 	g.True(!strings.Contains(inSess, "Ctrl-D"))
 }
 
-// The main menu carries direct shortcuts: Ctrl-\ runs [detach session], Ctrl-T
-// runs [new session] and Ctrl-G runs [use namespace], so the common commands are
-// one keystroke away without moving the cursor onto them.
+// The main menu carries direct shortcuts: Ctrl-\ runs [detach session] (or
+// [exit] at the top level, where there is nothing to detach from), Ctrl-T runs
+// [new session] and Ctrl-G runs [use namespace], so the common commands are one
+// keystroke away without moving the cursor onto them.
 func TestModelCommandShortcuts(t *testing.T) {
 	g := got.T(t)
 
-	// Ctrl-\ detaches (like selecting [detach session]).
-	detach := send(New(newStore(g, t), fakeCtrl{}), ctrlKey('\\'))
+	// Ctrl-\ at the top level leaves tm like selecting [exit] — the binding the
+	// menu advertises on that row, since [detach session] is not offered there.
+	top := send(New(newStore(g, t), fakeCtrl{}), ctrlKey('\\'))
+	g.True(top.quit)
+	g.Eq(top.Result().Action, ActionExit)
+
+	// Inside a session Ctrl-\ detaches (like selecting [detach session]).
+	detach := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), ctrlKey('\\'))
 	g.True(detach.quit)
 	g.Eq(detach.Result().Action, ActionDetach)
 
@@ -746,23 +770,29 @@ func TestModelShortcutsMainMenuOnly(t *testing.T) {
 }
 
 // Each shortcut command shows its key hint beside the label on the main menu.
+// At the top level [detach session] is hidden, so Ctrl-\ is advertised on
+// [exit]; inside a session it sits on the [detach session] row.
 func TestModelShortcutHintsRendered(t *testing.T) {
 	g := got.T(t)
 	m := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	v := m.View().Content
 	g.Has(v, "Ctrl-T")  // [new session]
-	g.Has(v, "Ctrl-\\") // [detach session]
+	g.Has(v, "Ctrl-\\") // [exit] (top level: Ctrl-\, esc or Ctrl-D)
 	g.Has(v, "Ctrl-G")  // [use namespace]
+
+	in := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	g.Has(in.View().Content, "Ctrl-\\") // [detach session]
 }
 
 // The focused row's shortcut highlights with the row: its hint renders in the
 // selection style, while other rows' hints stay in the dim key style. Moving the
-// cursor flips which hint is highlighted.
+// cursor flips which hint is highlighted. Framed inside a session, since that is
+// where the [detach session] row (and its Ctrl-\ hint) exists.
 func TestModelShortcutHintHighlightsOnFocus(t *testing.T) {
 	g := got.T(t)
 	th := styles()
-	m := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	m := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	// The cursor starts on [new session], so its Ctrl-T is highlighted while
 	// [detach session]'s Ctrl-\ stays dim.

@@ -342,6 +342,13 @@ func (m *Model) menuItems() []pickerItem {
 	}
 
 	for _, c := range palette {
+		// [detach session] only makes sense from within a session: at the top level
+		// there is nothing to detach from, so the row is dropped and its Ctrl-\ key
+		// acts as [exit] instead (see cmdForKey's caller), advertised on that row.
+		if c.id == cmdDetachSession && m.curSession == "" {
+			continue
+		}
+
 		item := pickerItem{
 			label:   c.label,
 			isCmd:   true,
@@ -349,16 +356,17 @@ func (m *Model) menuItems() []pickerItem {
 			payload: menuPayload{isCmd: true, cmdID: c.id},
 		}
 		// [exit]'s keys, top level only (esc resumes the session when the menu is
-		// open over one). Both esc and Ctrl-D (VEOF) end the menu on an empty filter,
-		// but Ctrl-D is a no-op once a query is typed — so react to the query and drop
-		// it once there is content.
+		// open over one). Ctrl-\ always leaves — with no session to detach from it
+		// falls through to [exit] — and esc and Ctrl-D (VEOF) end the menu on an
+		// empty filter, but Ctrl-D is a no-op once a query is typed — so react to
+		// the query and drop it once there is content.
 		if c.id == cmdExit && m.curSession == "" {
 			item.hintFn = func(query string) string {
 				if query == "" {
-					return "esc or Ctrl-D"
+					return "Ctrl-\\, esc or Ctrl-D"
 				}
 
-				return "esc"
+				return "Ctrl-\\ or esc"
 			}
 		}
 
@@ -669,6 +677,13 @@ func (m Model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// shortcut acts even mid-query (e.g. Ctrl-\ detaches while a filter is typed).
 	if m.pickFor == pickMenu {
 		if id, ok := cmdForKey(msg.String()); ok {
+			// At the top level [detach session] is not offered — there is nothing to
+			// detach from — so its Ctrl-\ runs [exit], the binding the menu advertises
+			// on that row.
+			if id == cmdDetachSession && m.curSession == "" {
+				id = cmdExit
+			}
+
 			return m.selectMenu(menuPayload{isCmd: true, cmdID: id})
 		}
 	}
@@ -1169,7 +1184,7 @@ func (m Model) viewHelp() string {
 		{"enter", "select the highlighted row"},
 		{"esc", "resume the session, or leave tm from the main menu"},
 		{"Ctrl-C", "quit"},
-		{`Ctrl-\`, "open this menu from a session; detach back to the menu"},
+		{`Ctrl-\`, "open this menu from a session; detach back to the menu; at the top level: leave tm"},
 		{"Ctrl-T", "new session (from the main menu)"},
 		{"Ctrl-G", "use namespace (from the main menu)"},
 		{"Ctrl-D", "like esc when the filter is empty (EOF)"},
@@ -1186,7 +1201,7 @@ func (m Model) viewHelp() string {
 		{"[rename session]", "rename a session; it keeps running"},
 		{"[kill session]", "end a session's shell and delete it (the current one too)"},
 		{"[clear history]", "wipe a session's scrollback — log file and memory — e.g. leaked secrets"},
-		{"[detach session]", "detach back to the menu; the session keeps running"},
+		{"[detach session]", "detach back to the menu; the session keeps running (shown inside a session)"},
 		{"[exit]", "leave tm; every session keeps running"},
 		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},
 		{"[drop namespace]", "delete a namespace"},

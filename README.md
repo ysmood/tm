@@ -109,15 +109,19 @@ never loaded.
 Exiting the session's shell itself (typing `exit` or pressing `Ctrl-D`) ends the
 session for good — its background process stops and it disappears from the list.
 Instead of dropping you out of tm, this returns you to the menu, where you can
-pick another session or start a new one. (To keep the session alive and leave tm,
-use `[detach session]` below.)
+pick another session or start a new one. (To keep the session alive, use
+`[detach session]` below; to leave tm entirely, `[exit]`.)
 
 ### Detach from a session
 
-To leave tm and return to the shell you launched it from — with every session
-still running in the background — choose the `[detach session]` command from the
-menu. You just type words like `detach`, `ds`, `[d`, `[ds`, etc. and hit enter.
-Run `tm` again to pick a session back up.
+While you are inside a session, choose the `[detach session]` command from the menu
+(`Ctrl-\` opens it). You just type words like `detach`, `ds`, `[d`, `[ds`, etc. and hit enter.
+It drops you back to the top-level menu with the session — and every other one — still
+running in the background.
+
+The top-level menu, where there is no session to detach from, doesn't offer the command;
+leaving tm from there is `[exit]`'s job (also on `esc`, `Ctrl-D`, or `Ctrl-\`). Run `tm`
+again to pick a session back up.
 
 ### Use namespace
 
