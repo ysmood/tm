@@ -83,6 +83,24 @@ func (s *Scrollback) History(mode proto.HistMode, lines, rows int) []byte {
 	}
 }
 
+// Clear discards all recorded history: the in-memory ring is emptied and the
+// log file truncated in place. The file stays open — it was opened with
+// O_APPEND, so later writes land at the new (zero) end — and the session keeps
+// running; only its recorded past is dropped, so nothing of it (say, a secret
+// echoed to the terminal) can be replayed on a later attach.
+func (s *Scrollback) Clear() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ring = nil
+
+	if s.log != nil {
+		return s.log.Truncate(0)
+	}
+
+	return nil
+}
+
 // Close closes the log file.
 func (s *Scrollback) Close() error {
 	s.mu.Lock()

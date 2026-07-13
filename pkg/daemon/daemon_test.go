@@ -215,6 +215,110 @@ func TestKillSession(t *testing.T) {
 	g.Is(gerr, store.ErrNotFound)
 }
 
+// A MsgClear connection wipes the session's recorded history without attaching
+// or ending anything: the log file and the in-memory ring are emptied — so a
+// later HistAll attach replays none of it (e.g. a secret echoed to the
+// terminal) — while the shell keeps running. The requester's connection closes
+// only once the wipe is done. While the wiped scrollback is still empty, an
+// attach that asked for history replays a dim hint instead of a blank screen
+// (the shell prints its prompt only when asked, so there is no cursor or prompt
+// to see); the hint retires as soon as new output is recorded, and a HistNone
+// attach never shows it.
+func TestClearHistory(t *testing.T) {
+	g, st, p := setupDaemon(t)
+	sess := makeSession(g, st, "clear1")
+
+	// Seed on-disk history from "before this daemon" too, so the wipe is proven
+	// against both the ring and the whole log file.
+	g.E(os.WriteFile(p.LogFile(sess.ID), []byte("SEEDED-SECRET\n"), 0o600))
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	nc, c := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistNone, Cols: 80, Rows: 24})
+	defer nc.Close()
+
+	// Produce live output; once it is read back it has been recorded (the daemon
+	// writes scrollback before forwarding to the client).
+	g.E(c.Write(proto.MsgInput, []byte("echo LIVE-SECRET\n")))
+	g.True(readUntil(nc, c, "LIVE-SECRET", 10*time.Second))
+
+	// A separate (non-attaching) connection requests the clear, then blocks until
+	// the daemon closes it — the signal that the wipe finished.
+	ctl, derr := proto.Dial(d.Addr())
+	g.E(derr)
+
+	defer ctl.Close()
+
+	cc := proto.NewConn(ctl)
+	g.E(cc.Write(proto.MsgClear, nil))
+
+	_ = ctl.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, _, rerr := cc.Read()
+	g.Is(rerr, io.EOF) // not a timeout: the daemon closed after clearing
+
+	// The log file on disk holds neither the seeded nor the live secret.
+	data, ferr := os.ReadFile(p.LogFile(sess.ID))
+	g.E(ferr)
+	g.True(!strings.Contains(string(data), "SEEDED-SECRET"))
+	g.True(!strings.Contains(string(data), "LIVE-SECRET"))
+
+	// A resume-style attach (HistNone) asked for no history, so it gets no hint
+	// either: its replay is empty.
+	ncn, cn := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistNone, Cols: 80, Rows: 24})
+	defer ncn.Close()
+
+	g.Eq(readReplay(g, ncn, cn, 10*time.Second), "")
+
+	// A fresh full-history attach replays nothing of the past — only the dim
+	// hint explaining the blank history...
+	nc2, c2 := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistAll, Cols: 80, Rows: 24})
+	defer nc2.Close()
+
+	hist := readReplay(g, nc2, c2, 10*time.Second)
+	g.True(!strings.Contains(hist, "SEEDED-SECRET"))
+	g.True(!strings.Contains(hist, "LIVE-SECRET"))
+	g.Has(hist, "history cleared here")
+
+	// ...and the session survived the wipe: the shell still answers.
+	g.E(c2.Write(proto.MsgInput, []byte("echo still-alive\n")))
+	g.True(readUntil(nc2, c2, "still-alive", 10*time.Second))
+
+	// With output recorded after the wipe there is real history to replay again,
+	// so the hint retires.
+	nc3, c3 := dialAttach(g, d.Addr(), proto.Attach{Hist: proto.HistAll, Cols: 80, Rows: 24})
+	defer nc3.Close()
+
+	hist = readReplay(g, nc3, c3, 10*time.Second)
+	g.Has(hist, "still-alive")
+	g.True(!strings.Contains(hist, "history cleared here"))
+}
+
+// readReplay accumulates an attach's history replay: every Output frame up to
+// the MsgReplayDone marker.
+func readReplay(g got.G, nc net.Conn, c *proto.Conn, timeout time.Duration) string {
+	deadline := time.Now().Add(timeout)
+
+	var hist strings.Builder
+
+	for {
+		_ = nc.SetReadDeadline(deadline)
+
+		mt, payload, err := c.Read()
+		g.E(err)
+
+		if mt == proto.MsgReplayDone {
+			return hist.String()
+		}
+
+		if mt == proto.MsgOutput {
+			hist.Write(payload)
+		}
+	}
+}
+
 // Every attach replay ends with a MsgReplayDone marker — recorded history
 // before it, live output after — so the relay can tell mid-replay apart from
 // live (the menu key pauses the former instead of detaching). It is sent even

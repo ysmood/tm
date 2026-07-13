@@ -133,9 +133,10 @@ func (c *controller) CreateAndSpawn(ns, name string) (string, error) {
 	return id, nil
 }
 
-// killTimeout bounds how long KillSession waits for a daemon to tear down. A
-// wedged daemon — say, blocked writing output to a suspended client — would
-// otherwise hang the menu forever. A var so tests can shorten it.
+// killTimeout bounds how long a daemon control request (KillSession,
+// ClearHistory) waits for the daemon to act. A wedged daemon — say, blocked
+// writing output to a suspended client — would otherwise hang the menu
+// forever. A var so tests can shorten it.
 var killTimeout = 5 * time.Second
 
 // KillSession ends a session by asking its daemon to shut down, which kills the
@@ -185,6 +186,57 @@ func (c *controller) killUnreachable(id string) error {
 	}
 
 	return c.st.DeleteSession(id)
+}
+
+// ClearHistory wipes a session's recorded history by asking its daemon to empty
+// the in-memory scrollback and truncate the log file, so nothing of the
+// session's past (say, a secret echoed to the terminal) survives on disk or can
+// be replayed on a later attach. The session keeps running. It blocks (bounded
+// by killTimeout) until the daemon closes the connection — the wipe is done. A
+// session whose daemon can't be asked at all falls back to clearUnreachable.
+func (c *controller) ClearHistory(id string) error {
+	nc, err := proto.Dial(proto.SockAddr(c.st.Paths(), id))
+	if err != nil {
+		return c.clearUnreachable(id)
+	}
+
+	defer func() { _ = nc.Close() }()
+
+	conn := proto.NewConn(nc)
+	if err := conn.Write(proto.MsgClear, nil); err != nil {
+		return c.clearUnreachable(id)
+	}
+
+	_ = nc.SetReadDeadline(time.Now().Add(killTimeout))
+
+	if err := awaitClose(conn); errors.Is(err, os.ErrDeadlineExceeded) {
+		return errors.New("timed out waiting for the session to clear its history")
+	}
+
+	return nil
+}
+
+// clearUnreachable handles clearing a session whose daemon can't be asked (the
+// dial or the clear request failed). A dead session's history is just its
+// leftover log file, so that is truncated directly — the record itself is left
+// for Reap. A live daemon that merely lost its socket still holds history in
+// its ring, which truncating the file alone would not wipe, so that is reported
+// rather than half-cleared.
+func (c *controller) clearUnreachable(id string) error {
+	sess, err := c.st.GetSession(id)
+	if err != nil {
+		return err
+	}
+
+	if sessionLive(sess) {
+		return errors.New("session is alive but unreachable (pid " + strconv.Itoa(sess.PID) + ")")
+	}
+
+	if err := os.Truncate(c.st.Paths().LogFile(id), 0); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	return nil
 }
 
 // sessionLive reports whether a session's daemon is still running. A
@@ -550,7 +602,8 @@ func openMenuOverSession(curID string) promptGuard {
 // as it was, the way fzf does on esc. A switch or detach reuses the same restore;
 // the target's replay (or the launching shell) then takes the screen from there.
 //
-// Notices the menu printed (renames) need more work: Bubble Tea inserts them
+// Notices the menu printed (renames, kills, cleared histories) need more work:
+// Bubble Tea inserts them
 // directly above its picker, and the guard put the picker below the prompt — so
 // they land between the prompt and the picker, where the resumed session's very
 // next output would overwrite them, with the cursor sitting confusingly one line
@@ -636,7 +689,8 @@ func runInSession(ctrl *controller) error {
 }
 
 // showMenu prunes dead sessions, runs the interactive menu once, and returns what
-// the user chose plus the notices the menu printed above its picker (renames),
+// the user chose plus the notices the menu printed above its picker (renames,
+// kills, cleared histories),
 // which runMenu repositions when the menu sat over a session (see promptGuard).
 // A non-empty curID frames the menu as running inside that session even though
 // this process has no $TM_SESSION — runMenu uses it to reopen the menu as

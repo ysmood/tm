@@ -48,6 +48,13 @@ const (
 	// replay instead of detaching — so a long history can be interrupted. Relays
 	// that predate it just ignore it. No payload.
 	MsgReplayDone
+	// MsgClear asks the daemon to wipe the session's recorded history: the
+	// in-memory scrollback ring is emptied and the log file truncated, so a later
+	// attach replays nothing of what came before (say, a secret echoed to the
+	// terminal). The session keeps running. The sender does not attach; the daemon
+	// closes the connection once the wipe is done, so the sender can block on a
+	// read to know it happened. No payload.
+	MsgClear
 )
 
 // HistMode selects how much scrollback the daemon replays on attach.

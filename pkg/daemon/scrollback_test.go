@@ -51,6 +51,24 @@ func TestHistoryNone(t *testing.T) {
 	g.Len(sb.History(proto.HistNone, 0, 0), 0)
 }
 
+// Clear drops both sides of the scrollback — the ring and the log file — so no
+// history mode can replay what came before; output after the clear is recorded
+// from a clean slate (the O_APPEND handle writes at the truncated file's end).
+func TestClear(t *testing.T) {
+	g := got.T(t)
+	sb := newSB(t, g, daemon.DefaultRingBytes)
+	sb.Write([]byte("secret\n"))
+
+	g.E(sb.Clear())
+	g.Len(sb.History(proto.HistAll, 0, 0), 0)
+	g.Len(sb.History(proto.HistLines, 100, 0), 0)
+	g.Len(sb.History(proto.HistPage, 0, 24), 0)
+
+	sb.Write([]byte("after\n"))
+	g.Eq(string(sb.History(proto.HistAll, 0, 0)), "after\n")
+	g.Eq(string(sb.History(proto.HistLines, 100, 0)), "after\n")
+}
+
 func TestHistoryAllReadsFullLog(t *testing.T) {
 	g := got.T(t)
 	// Small ring so memory is trimmed but the log keeps everything.

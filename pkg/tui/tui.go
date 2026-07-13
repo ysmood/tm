@@ -48,6 +48,10 @@ type Controller interface {
 	// shell and removes the session's files. A session whose daemon is unreachable
 	// (already dead) is removed from the store directly.
 	KillSession(id string) error
+	// ClearHistory wipes the session's recorded history — its daemon empties the
+	// in-memory scrollback and truncates the log file — so nothing of it can leak
+	// through a later replay. The session keeps running.
+	ClearHistory(id string) error
 }
 
 // Action is what the user resolved the menu to when it exited; app.Run carries
@@ -97,6 +101,7 @@ const (
 	cmdNewSession cmdID = iota
 	cmdRenameSession
 	cmdKillSession
+	cmdClearHistory
 	cmdDetachSession
 	cmdExit
 	cmdUseNamespace
@@ -122,6 +127,7 @@ var palette = []paletteCmd{
 	{cmdNewSession, "[new session]", "ctrl+t", "Ctrl-T"},
 	{cmdRenameSession, "[rename session]", "", ""},
 	{cmdKillSession, "[kill session]", "", ""},
+	{cmdClearHistory, "[clear history]", "", ""},
 	{cmdDetachSession, "[detach session]", "ctrl+\\", "Ctrl-\\"},
 	{cmdExit, "[exit]", "", ""},
 	{cmdUseNamespace, "[use namespace]", "ctrl+g", "Ctrl-G"},
@@ -164,9 +170,14 @@ type renamePayload struct{ id, name string }
 // and its name for the notice printed afterwards.
 type killPayload struct{ id, name string }
 
+// clearPayload is the data attached to a clear-history-chooser row: the session
+// whose history to wipe, and its name for the notice printed afterwards.
+type clearPayload struct{ id, name string }
+
 // currentHint marks the session this menu is framed inside in choosers that
-// keep it (the kill chooser), so picking it — which also ends what is on this
-// terminal — is a deliberate act.
+// keep it (rename, kill, clear history), so it reads apart from the others —
+// and picking it in the kill chooser, which also ends what is on this
+// terminal, is a deliberate act.
 const currentHint = "current"
 
 // scrollbackPayload is the data attached to a scrollback-chooser row.
@@ -192,6 +203,7 @@ const (
 	pickScrollback
 	pickRenameSession
 	pickKillSession
+	pickClearHistory
 	pickUseNamespace
 	pickDropNamespace
 )
@@ -239,10 +251,11 @@ type Model struct {
 	result Result
 
 	// notices are the lines printed above the picker while this menu was open
-	// (renames). app.Run reads them via Notices after the program exits: a menu
-	// opened over a session draws below the shell's prompt, so tea.Println lands
-	// them below it too, where the resumed session would overwrite them — the
-	// caller repositions them above the prompt instead (see promptGuard).
+	// (renames, kills, cleared histories — see printNotice). app.Run reads them
+	// via Notices after the program exits: a menu opened over a session draws
+	// below the shell's prompt, so tea.Println lands them below it too, where the
+	// resumed session would overwrite them — the caller repositions them above
+	// the prompt instead (see promptGuard).
 	notices []string
 
 	status string
@@ -376,7 +389,8 @@ func (m *Model) showMenu() {
 // showRenameSessions lists the sessions [rename session] can target, and reports
 // false when the namespace holds none, so the caller says so rather than opening
 // an empty picker. Unlike the main menu it keeps the session this tm is running
-// inside: renaming the session you are in is the common case, and a rename never
+// inside — marked "current", like the other choosers that keep it — since
+// renaming the session you are in is the common case, and a rename never
 // attaches, so there is nothing to re-enter.
 func (m *Model) showRenameSessions() bool {
 	sessions, _ := m.st.ListByNamespace(m.ns)
@@ -385,12 +399,18 @@ func (m *Model) showRenameSessions() bool {
 	}
 
 	items := make([]pickerItem, 0, len(sessions))
+
 	for _, s := range sessions {
-		items = append(items, pickerItem{
+		item := pickerItem{
 			label:   m.sessionLabel(s),
 			text:    s.Name,
 			payload: renamePayload{id: s.ID, name: s.Name},
-		})
+		}
+		if s.ID == m.curSessionID {
+			item.hint = currentHint
+		}
+
+		items = append(items, item)
 	}
 
 	m.mode = modePick
@@ -429,6 +449,40 @@ func (m *Model) showKillSessions() bool {
 
 	m.mode = modePick
 	m.pickFor = pickKillSession
+	m.pick.setItems(items)
+
+	return true
+}
+
+// showClearSessions lists the sessions [clear history] can target, and reports
+// false when the namespace holds none, so the caller says so rather than
+// opening an empty picker. Like the kill chooser it keeps the session this tm
+// is running inside — marked "current" — since wiping the history of the
+// session you are in is the common case (a secret was just echoed there), and a
+// clear never disturbs what is on screen.
+func (m *Model) showClearSessions() bool {
+	sessions, _ := m.st.ListByNamespace(m.ns)
+	if len(sessions) == 0 {
+		return false
+	}
+
+	items := make([]pickerItem, 0, len(sessions))
+
+	for _, s := range sessions {
+		item := pickerItem{
+			label:   m.sessionLabel(s),
+			text:    s.Name,
+			payload: clearPayload{id: s.ID, name: s.Name},
+		}
+		if s.ID == m.curSessionID {
+			item.hint = currentHint
+		}
+
+		items = append(items, item)
+	}
+
+	m.mode = modePick
+	m.pickFor = pickClearHistory
 	m.pick.setItems(items)
 
 	return true
@@ -538,10 +592,27 @@ func (m Model) attach(id string, hist proto.HistMode, lines uint32) (Model, tea.
 // program has exited; app.Run reads it to attach, switch, or just leave tm.
 func (m Model) Result() Result { return m.result }
 
-// Notices reports the lines this menu printed above its picker (renames), in
-// order. Meaningful once the program has exited; app.Run uses them to fix the
-// notices' position when the menu was drawn over a live session's prompt.
+// Notices reports the lines this menu printed above its picker (renames, kills,
+// cleared histories), in order. Meaningful once the program has exited; app.Run
+// uses them to fix the notices' position when the menu was drawn over a live
+// session's prompt.
 func (m Model) Notices() []string { return m.notices }
+
+// printNotice prints line above the picker, where it stays in the scrollback.
+// tea.Println lands the line unmanaged by the program, so it survives the
+// picker's redraws and its teardown — the same trail the attach/detach notices
+// leave. The line is recorded too (see Notices): a menu opened over a session
+// draws below the shell's prompt, so tea.Println lands it below the prompt as
+// well, where the resumed session's next output would overwrite it — app.Run
+// repositions the recorded rows above the prompt instead. Truncated to the
+// terminal width so it occupies exactly one row, since that repositioning
+// counts rows and a wrapped line would throw the arithmetic off.
+func (m *Model) printNotice(line string) tea.Cmd {
+	notice := ansi.Truncate(line, max(1, m.width-1), "…")
+	m.notices = append(m.notices, notice)
+
+	return tea.Println(notice)
+}
 
 // WithStatus returns the model with a status line set, used to carry a note
 // (e.g. a reaped dead session) into a freshly opened menu.
@@ -651,19 +722,32 @@ func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
 		if p, ok := it.payload.(killPayload); ok {
 			return m.killSession(p)
 		}
-	case pickUseNamespace:
-		switch pl := it.payload.(type) {
-		case newNamespacePayload:
-			return m.createNamespace(pl.name)
-		case string:
-			m.ns = pl
-			m.status = "namespace: " + pl
-			m.showMenu()
+	case pickClearHistory:
+		if p, ok := it.payload.(clearPayload); ok {
+			return m.clearHistory(p)
 		}
+	case pickUseNamespace:
+		return m.selectNamespace(it.payload)
 	case pickDropNamespace:
 		if ns, ok := it.payload.(string); ok {
 			return m.dropNamespace(ns)
 		}
+	}
+
+	return m, nil
+}
+
+// selectNamespace handles a row picked from the [use namespace] chooser: the
+// create row makes the typed namespace and switches to it, an existing name
+// just switches.
+func (m Model) selectNamespace(payload any) (tea.Model, tea.Cmd) {
+	switch pl := payload.(type) {
+	case newNamespacePayload:
+		return m.createNamespace(pl.name)
+	case string:
+		m.ns = pl
+		m.status = "namespace: " + pl
+		m.showMenu()
 	}
 
 	return m, nil
@@ -691,6 +775,12 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 		// there is nothing to pick.
 		if !m.showKillSessions() {
 			m.status = "no sessions to kill"
+		}
+	case cmdClearHistory:
+		// Pick the session whose history to wipe first, unless the namespace is
+		// empty — then there is nothing to pick.
+		if !m.showClearSessions() {
+			m.status = "no sessions to clear"
 		}
 	case cmdDetachSession:
 		// Detach from the current session back to the top-level menu (the session
@@ -759,7 +849,27 @@ func (m Model) killSession(p killPayload) (tea.Model, tea.Cmd) {
 
 	m.showMenu()
 
-	return m, tea.Println(attach.KilledSessionNotice(p.name))
+	return m, m.printNotice(attach.KilledSessionNotice(p.name))
+}
+
+// clearHistory wipes the chosen session's recorded history: the controller asks
+// its daemon to empty the in-memory scrollback and truncate the log file, so
+// nothing of the session's past (say, a secret echoed to the terminal) can be
+// replayed on a later attach. The session keeps running and — unlike a kill —
+// clearing disturbs nothing on screen, so even the current session is handled
+// inline: the menu returns to the main list and the wipe is printed above it,
+// where it stays in the scrollback.
+func (m Model) clearHistory(p clearPayload) (tea.Model, tea.Cmd) {
+	if err := m.ctrl.ClearHistory(p.id); err != nil {
+		m.status = "failed to clear history: " + err.Error()
+		m.showMenu()
+
+		return m, nil
+	}
+
+	m.showMenu()
+
+	return m, m.printNotice(attach.ClearedHistoryNotice(p.name))
 }
 
 // createNamespace makes ns and switches the active view to it. It backs the
@@ -889,16 +999,7 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 			return m, nil // submitted the name it already had: nothing happened, say nothing
 		}
 
-		// Print the rename above the menu. tea.Println lands the line in the
-		// scrollback unmanaged by the program, so it survives the picker's redraws and
-		// its teardown — the same trail the attach/detach notices leave. Truncated to
-		// the terminal width so it occupies exactly one row: the caller repositions
-		// notice rows by count when this menu sits over a session (see Notices), so a
-		// wrapped line would throw that arithmetic off.
-		notice := ansi.Truncate(attach.RenamedSessionNotice(old, val), max(1, m.width-1), "…")
-		m.notices = append(m.notices, notice)
-
-		return m, tea.Println(notice)
+		return m, m.printNotice(attach.RenamedSessionNotice(old, val))
 	case inputCustomLines:
 		n, err := strconv.Atoi(val)
 		if err != nil || n <= 0 {
@@ -1084,6 +1185,7 @@ func (m Model) viewHelp() string {
 		{"[new session]", "create and start a new session"},
 		{"[rename session]", "rename a session; it keeps running"},
 		{"[kill session]", "end a session's shell and delete it (the current one too)"},
+		{"[clear history]", "wipe a session's scrollback — log file and memory — e.g. leaked secrets"},
 		{"[detach session]", "detach back to the menu; the session keeps running"},
 		{"[exit]", "leave tm; every session keeps running"},
 		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},
@@ -1112,12 +1214,15 @@ func buildInfo() (version, repo string) {
 	if !ok {
 		return version, repo
 	}
+
 	if info.Main.Version != "" {
 		version = info.Main.Version
 	}
+
 	if info.Main.Path != "" {
 		repo = "https://" + info.Main.Path
 	}
+
 	return version, repo
 }
 

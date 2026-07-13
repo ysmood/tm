@@ -26,6 +26,15 @@ const (
 // so the terminal recovers from attaching into the middle of a full-screen app.
 var softReset = []byte("\x1b[!p")
 
+// clearedHint is replayed in place of history when a cleared session is
+// attached with nothing recorded since the wipe: the shell prints its prompt
+// only when asked, so the replay would otherwise be blank — no prompt, no
+// cursor — as if the attach hung. The dim line (the grey of the tm notices)
+// explains the emptiness and how to get a prompt. It is served at attach time,
+// not written to the log, so it never becomes part of the recorded history.
+var clearedHint = []byte(
+	"\x1b[38;5;245m[tm history cleared here - might need to press enter for a prompt]\x1b[0m\r\n")
+
 // Daemon owns one session's PTY and serves attach connections.
 type Daemon struct {
 	paths config.Paths
@@ -36,6 +45,11 @@ type Daemon struct {
 
 	mu     sync.Mutex
 	client *proto.Conn // currently attached client, or nil
+	// cleared records that the session's history was wiped (MsgClear), so an
+	// attach that finds nothing to replay can say why instead of showing a blank
+	// screen (see clearedHint). Never reset: it only matters while the scrollback
+	// is still empty — any later output makes the replay non-empty again.
+	cleared bool
 
 	done     chan struct{}
 	once     sync.Once
@@ -185,6 +199,20 @@ func (d *Daemon) handleConn(nc net.Conn) {
 		return
 	}
 
+	// A MsgClear connection wipes the session's recorded history — the scrollback
+	// ring and the log file — without attaching, so a later attach replays none of
+	// it. The session and any attached client run on undisturbed; the deferred
+	// close of this connection tells the requester the wipe is done.
+	if mt == proto.MsgClear {
+		_ = d.sb.Clear()
+
+		d.mu.Lock()
+		d.cleared = true
+		d.mu.Unlock()
+
+		return
+	}
+
 	if mt != proto.MsgAttach {
 		return
 	}
@@ -243,6 +271,14 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 	// Strip query sequences so replaying history can't make the attaching
 	// terminal answer probes and inject the replies into the session.
 	hist := sanitizeReplay(d.sb.History(att.Hist, int(att.Lines), rows))
+
+	// History was asked for, but the wipe left nothing to show: explain the
+	// blank screen instead of replaying it. A HistNone attach (resuming a paused
+	// session, whose screen still has content) stays silent.
+	if len(hist) == 0 && att.Hist != proto.HistNone && d.cleared {
+		hist = clearedHint
+	}
+
 	if !replay(c, hist) {
 		d.client = nil
 

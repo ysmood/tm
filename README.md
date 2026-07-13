@@ -62,6 +62,27 @@ back to the menu the same way).
 
 tm then prints `[tm killed session <name>]` above the menu, so the change stays in your scrollback.
 
+### Clear a session's history
+
+The command is `[clear history]`. You just type words like `clear`, `ch`, `[c`, etc. and hit enter.
+
+Pick the session whose history to wipe — including the one you are currently inside, marked
+`current`. Both sides of the scrollback are erased: the in-memory buffer the session's background
+process keeps for "one page"/"N lines" replays, and the on-disk log file behind "all history".
+The session keeps running; only its recorded past is gone, so nothing of it can be replayed on a
+later attach.
+
+This is handy when a secret — a password, a token — was echoed to the terminal: clearing the
+history keeps it from leaking through the session's log file or a later history replay.
+
+Re-attaching before the session has produced anything new replays a dim
+`[tm history cleared here - might need to press enter for a prompt]` line instead of a blank
+screen — the shell prints its prompt only when asked, so right after a wipe there is nothing
+else to show.
+
+tm then prints `[tm cleared history of session <name>]` above the menu, so the change stays in
+your scrollback.
+
 ### Attach to a session
 
 Each session will be listed with its name, just type in the name of the session you want to attach to and hit enter. You will be attached to that session.

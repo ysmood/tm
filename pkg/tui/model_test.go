@@ -21,6 +21,7 @@ func (fakeCtrl) CreateAndSpawn(string, string) (string, error) { return "id", ni
 func (fakeCtrl) CurrentSession() (string, string)              { return "", "" }
 func (fakeCtrl) DefaultSessionName(string) string              { return "default-name" }
 func (fakeCtrl) KillSession(string) error                      { return nil }
+func (fakeCtrl) ClearHistory(string) error                     { return nil }
 
 // killCtrl deletes the killed session from the store, standing in for the real
 // controller's daemon shutdown so the menu's rebuilt list reflects the kill.
@@ -290,7 +291,8 @@ func TestModelRenameCurrentSession(t *testing.T) {
 	m = typeStr(m, "rs")
 	m = send(m, keyEnterMsg)
 	g.Eq(m.pickFor, pickRenameSession)
-	g.Len(m.pick.all, 1) // but listed here
+	g.Len(m.pick.all, 1)                  // but listed here...
+	g.Eq(m.pick.all[0].hint, currentHint) // ...marked as the session you are in
 
 	m = send(m, keyEnterMsg)
 	m = typeStr(m, "!")
@@ -372,6 +374,11 @@ func TestModelKillSession(t *testing.T) {
 	printed := printedLine(cmd)
 	g.Has(printed, "killed session")
 	g.Has(printed, "doomed")
+
+	// And it is recorded, so a menu opened over a session can move it above the
+	// shell's prompt where it stays visible (see Model.Notices).
+	g.Len(m.Notices(), 1)
+	g.Has(m.Notices()[0], "killed session")
 }
 
 // The kill chooser keeps the session this tm is running inside — marked
@@ -461,6 +468,143 @@ func TestModelKillSessionError(t *testing.T) {
 	g.Eq(m.pickFor, pickMenu)
 	g.Has(m.headerTitle(), "failed to kill session: boom")
 	g.Eq(sessionRows(m), 1)
+}
+
+// clearCtrl records which session ClearHistory was asked to wipe.
+type clearCtrl struct {
+	fakeCtrl
+
+	cleared *[]string
+}
+
+func (c clearCtrl) ClearHistory(id string) error {
+	*c.cleared = append(*c.cleared, id)
+
+	return nil
+}
+
+// sessClearCtrl is clearCtrl for a tm framed inside a session: it reports the
+// current session and records what ClearHistory was asked to wipe.
+type sessClearCtrl struct {
+	sessCtrl
+
+	cleared *[]string
+}
+
+func (c sessClearCtrl) ClearHistory(id string) error {
+	*c.cleared = append(*c.cleared, id)
+
+	return nil
+}
+
+// [clear history] picks a session and wipes its recorded scrollback: the
+// controller clears it, the session stays running (and listed), and the wipe is
+// printed above the menu, where it stays in the scrollback.
+func TestModelClearHistory(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "h1", Name: "leaky", Namespace: store.DefaultNamespace}))
+
+	var cleared []string
+
+	m := New(st, clearCtrl{cleared: &cleared})
+
+	m = typeStr(m, "ch")
+	m = send(m, keyEnterMsg) // [clear history] -> the session chooser
+	g.Eq(m.pickFor, pickClearHistory)
+
+	next, cmd := m.Update(keyEnterMsg) // the only session
+	m = next.(Model)
+
+	g.Eq(m.mode, modePick)
+	g.Eq(m.pickFor, pickMenu)
+	g.True(!m.quit) // clearing never attaches or leaves the menu
+	g.Eq(cleared, []string{"h1"})
+
+	// The session survives the clear and stays in the list.
+	_, err := st.GetSession("h1")
+	g.E(err)
+	g.Eq(sessionRows(m), 1)
+
+	// The notice names the cleared session; tea.Println carries it into the
+	// scrollback above the picker.
+	g.NotNil(cmd)
+	printed := printedLine(cmd)
+	g.Has(printed, "cleared history of session")
+	g.Has(printed, "leaky")
+
+	// And it is recorded, so a menu opened over a session can move it above the
+	// shell's prompt where it stays visible (see Model.Notices).
+	g.Len(m.Notices(), 1)
+	g.Has(m.Notices()[0], "cleared history of session")
+}
+
+// The clear chooser keeps the session this tm is running inside — marked
+// "current" — and clearing it works inline like any other session: unlike a
+// kill, a clear disturbs nothing on screen, so the menu just stays open.
+func TestModelClearHistoryCurrentSession(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+
+	var cleared []string
+
+	m := New(st, sessClearCtrl{sessCtrl: sessCtrl{id: "cur", name: "current"}, cleared: &cleared})
+	m = send(typeStr(m, "ch"), keyEnterMsg)
+
+	g.Eq(m.pickFor, pickClearHistory)
+	g.Len(m.pick.all, 1) // the current session is listed, marked
+
+	var curHint string
+
+	for _, it := range m.pick.all {
+		if p, ok := it.payload.(clearPayload); ok && p.id == "cur" {
+			curHint = it.hint
+		}
+	}
+
+	g.Eq(curHint, currentHint)
+
+	next, cmd := m.Update(keyEnterMsg)
+	m = next.(Model)
+
+	g.True(!m.quit) // handled inline: nothing is torn down
+	g.Eq(m.pickFor, pickMenu)
+	g.Eq(cleared, []string{"cur"})
+	g.NotNil(cmd)
+	g.Has(printedLine(cmd), "cleared history of session")
+}
+
+// failClearCtrl simulates a clear the controller could not carry out.
+type failClearCtrl struct{ fakeCtrl }
+
+func (failClearCtrl) ClearHistory(string) error { return errors.New("boom") }
+
+// A failed clear returns to the main menu with the reason in the header.
+func TestModelClearHistoryError(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "h1", Name: "sturdy", Namespace: store.DefaultNamespace}))
+
+	m := New(st, failClearCtrl{})
+	m = send(typeStr(m, "ch"), keyEnterMsg)
+
+	next, cmd := m.Update(keyEnterMsg) // the only session
+	m = next.(Model)
+
+	g.Nil(cmd) // nothing printed: nothing happened
+	g.Eq(m.pickFor, pickMenu)
+	g.Has(m.headerTitle(), "failed to clear history: boom")
+}
+
+// With no sessions in the namespace the command says so instead of opening an
+// empty chooser.
+func TestModelClearHistoryNoSessions(t *testing.T) {
+	g := got.T(t)
+
+	m := send(typeStr(New(newStore(g, t), fakeCtrl{}), "ch"), keyEnterMsg)
+	g.Eq(m.pickFor, pickMenu)
+	g.Has(m.headerTitle(), "no sessions to clear")
 }
 
 func mustGet(g got.G, st *store.Store, id string) store.Session {
@@ -626,9 +770,9 @@ func TestModelShortcutHintHighlightsOnFocus(t *testing.T) {
 	g.Has(v, th.sel.Render("Ctrl-T"))
 	g.Has(v, th.key.Render(`Ctrl-\`))
 
-	// Down past [rename session] and [kill session] onto [detach session]: now its
-	// Ctrl-\ is highlighted and Ctrl-T is dim.
-	v = send(send(send(m, keyDownMsg), keyDownMsg), keyDownMsg).View().Content
+	// Down past [rename session], [kill session] and [clear history] onto
+	// [detach session]: now its Ctrl-\ is highlighted and Ctrl-T is dim.
+	v = send(send(send(send(m, keyDownMsg), keyDownMsg), keyDownMsg), keyDownMsg).View().Content
 	g.Has(v, th.sel.Render(`Ctrl-\`))
 	g.Has(v, th.key.Render("Ctrl-T"))
 }

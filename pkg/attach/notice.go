@@ -71,6 +71,15 @@ func KilledSessionNotice(name string) string {
 	return noticeLine("[tm killed session ", name, "]")
 }
 
+// ClearedHistoryNotice is shown after [clear history] wipes session name's
+// recorded scrollback (its log file and in-memory buffer). Like
+// RenamedSessionNotice it is a string: the menu is still on screen when the
+// clear lands, so it is printed through Bubble Tea rather than written to the
+// terminal.
+func ClearedHistoryNotice(name string) string {
+	return noticeLine("[tm cleared history of session ", name, "]")
+}
+
 // KilledCurrentSessionNotice is KilledSessionNotice for when [kill session] ends
 // the session the menu was opened over: the menu has already quit (the relay is
 // torn down around the kill), so the notice is written straight to the terminal
