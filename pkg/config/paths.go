@@ -54,17 +54,23 @@ func New() (Paths, error) {
 	return Paths{Home: home, Runtime: defaultRuntime()}, nil
 }
 
-// Sessions is the directory holding per-session metadata files.
+// Sessions is the directory holding one directory per session.
 func (p Paths) Sessions() string { return filepath.Join(p.Home, "sessions") }
 
 // Namespaces is the directory holding namespace marker files.
 func (p Paths) Namespaces() string { return filepath.Join(p.Home, "namespaces") }
 
-// Logs is the directory holding per-session scrollback logs.
-func (p Paths) Logs() string { return filepath.Join(p.Home, "logs") }
+// SessionDir is a session's own directory: everything persistent it owns — its
+// metadata, its scrollback log, its daemon's diagnostics — lives inside, so the
+// session is one self-contained thing to inspect, back up, or delete.
+func (p Paths) SessionDir(id string) string {
+	return filepath.Join(p.Sessions(), id)
+}
 
 // Sock is the directory holding per-session unix sockets. It is Runtime when
-// set, otherwise a "sock" subdirectory of Home as a fallback.
+// set, otherwise a "sock" subdirectory of Home as a fallback. Sockets stay out
+// of the session's own directory: their paths have a ~104-byte OS limit, which
+// a deep Home would blow past.
 func (p Paths) Sock() string {
 	if p.Runtime != "" {
 		return p.Runtime
@@ -75,12 +81,13 @@ func (p Paths) Sock() string {
 
 // SessionFile is the metadata file path for a session id.
 func (p Paths) SessionFile(id string) string {
-	return filepath.Join(p.Sessions(), id+".json")
+	return filepath.Join(p.SessionDir(id), "meta.json")
 }
 
-// LogFile is the scrollback log path for a session id.
+// LogFile is the scrollback log path for a session id: the raw terminal output
+// of the session's shell, and the only place its history lives.
 func (p Paths) LogFile(id string) string {
-	return filepath.Join(p.Logs(), id+".log")
+	return filepath.Join(p.SessionDir(id), "std.log")
 }
 
 // SockFile is the unix socket path for a session id (unix only).
@@ -102,12 +109,12 @@ func (p Paths) ReadyFile(id string) string {
 // DaemonLogFile captures a daemon process's own stdout/stderr for diagnostics
 // (distinct from the session's scrollback log).
 func (p Paths) DaemonLogFile(id string) string {
-	return filepath.Join(p.Logs(), id+".daemon.log")
+	return filepath.Join(p.SessionDir(id), "daemon.log")
 }
 
-// EnsureDirs creates Home and all subdirectories.
+// EnsureDirs creates Home and the directories shared by every session.
 func (p Paths) EnsureDirs() error {
-	for _, d := range []string{p.Sessions(), p.Namespaces(), p.Logs(), p.Sock()} {
+	for _, d := range []string{p.Sessions(), p.Namespaces(), p.Sock()} {
 		err := os.MkdirAll(d, 0o700)
 		if err != nil {
 			return err
@@ -115,4 +122,10 @@ func (p Paths) EnsureDirs() error {
 	}
 
 	return nil
+}
+
+// EnsureSessionDir creates a session's own directory, so its metadata, log and
+// daemon log can be written into it.
+func (p Paths) EnsureSessionDir(id string) error {
+	return os.MkdirAll(p.SessionDir(id), 0o700)
 }

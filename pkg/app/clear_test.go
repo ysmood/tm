@@ -86,9 +86,9 @@ func TestControllerClearHistoryDead(t *testing.T) {
 }
 
 // A session that is alive but unreachable — its socket vanished while the
-// daemon runs on — is NOT half-cleared: the daemon's in-memory ring cannot be
-// reached, so truncating the file alone would still leave the history
-// replayable. The clear errors and leaves everything in place.
+// daemon runs on — is NOT half-cleared: the daemon keeps appending to the log
+// behind our back, so truncating the file without it would leave the session in
+// an odd half-wiped state. The clear errors and leaves everything in place.
 func TestControllerClearHistoryUnreachableAlive(t *testing.T) {
 	g := got.T(t)
 

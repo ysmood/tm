@@ -93,25 +93,20 @@ func (s *Store) RenameSession(id, name string) error {
 	return s.SaveSession(sess)
 }
 
-// DeleteSession removes a session's metadata plus its transient files (log,
-// socket, ready marker, daemon log). Missing files are ignored.
+// DeleteSession removes a session's own directory — its metadata, log and daemon
+// log go with it — plus the transient files it owns outside that directory (its
+// socket and ready marker, which live under Sock). Missing files are ignored.
 func (s *Store) DeleteSession(id string) error {
-	_ = os.Remove(s.paths.LogFile(id))
 	_ = os.Remove(s.paths.SockFile(id))
 	_ = os.Remove(s.paths.ReadyFile(id))
 
-	_ = os.Remove(s.paths.DaemonLogFile(id))
-	err := os.Remove(s.paths.SessionFile(id))
-
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	return nil
+	return os.RemoveAll(s.paths.SessionDir(id))
 }
 
-// ListSessions returns all sessions sorted by creation time then name.
-// Unreadable or partially-written files are skipped rather than failing.
+// ListSessions returns all sessions sorted by creation time then name. A session
+// is a directory holding a metadata file; anything else under Sessions (a stray
+// file, a directory with no readable metadata — say, one half-written by a
+// concurrent create) is skipped rather than failing the listing.
 func (s *Store) ListSessions() ([]Session, error) {
 	entries, err := os.ReadDir(s.paths.Sessions())
 	if err != nil {
@@ -125,11 +120,11 @@ func (s *Store) ListSessions() ([]Session, error) {
 	var out []Session
 
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if !e.IsDir() {
 			continue
 		}
 
-		sess, err := readSession(filepath.Join(s.paths.Sessions(), e.Name()))
+		sess, err := readSession(s.paths.SessionFile(e.Name()))
 		if err != nil {
 			continue
 		}

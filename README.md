@@ -30,9 +30,18 @@ This command will create a new shell session. It will auto generate a default na
 The auto generated name is based on the current working dir, git repo name, or the current time, etc.
 
 All session info is stored as plain files under a single directory (`~/.tm` by default,
-override with the `TM_HOME` environment variable): one small JSON file per session plus its
-scrollback log. There is no database, so the session list loads near-instantly and any number
-of `tm` windows can read it at once with no locking.
+override with the `TM_HOME` environment variable), one directory per session:
+
+```
+~/.tm/sessions/<session_id>/meta.json    # name, namespace, shell, cwd, pid
+~/.tm/sessions/<session_id>/std.log      # the session's scrollback (its shell's raw output)
+~/.tm/sessions/<session_id>/daemon.log   # the session's background process's own diagnostics
+```
+
+Everything a session owns lives in its own directory, so a session is one self-contained thing
+to look at, copy, or delete. There is no database, so the session list loads near-instantly and
+any number of `tm` windows can read it at once with no locking. (The session's unix socket is
+the exception: it lives under `/tmp`, since socket paths have a short OS length limit.)
 
 There is also no client-server like tmux: each session runs as its own independent background
 process, so there is no shared server that can die and take all your sessions with it.

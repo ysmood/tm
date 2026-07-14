@@ -33,6 +33,12 @@ func SpawnWith(exe string, p config.Paths, sess store.Session) error {
 	if err := p.EnsureDirs(); err != nil {
 		return err
 	}
+
+	// The daemon's log goes in the session's own directory, alongside its metadata
+	// and scrollback.
+	if err := p.EnsureSessionDir(sess.ID); err != nil {
+		return err
+	}
 	// Clear any stale readiness marker before launching.
 	_ = os.Remove(p.ReadyFile(sess.ID))
 

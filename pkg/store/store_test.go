@@ -1,6 +1,8 @@
 package store_test
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -194,6 +196,73 @@ func TestPrune(t *testing.T) {
 	g.E(err)
 	g.Len(list, 1)
 	g.Eq(list[0].ID, "live")
+}
+
+// Everything persistent a session owns lives in one directory named after its
+// id — its metadata, its scrollback log, its daemon's log — so a session is a
+// single self-contained thing on disk, and deleting it removes the lot.
+func TestSessionDirLayout(t *testing.T) {
+	g := got.T(t)
+
+	p := config.Paths{Home: t.TempDir(), Runtime: t.TempDir()}
+	g.E(p.EnsureDirs())
+	st := store.New(p)
+
+	g.E(st.SaveSession(sess("s1", "one", store.DefaultNamespace, 1)))
+
+	dir := filepath.Join(p.Home, "sessions", "s1")
+	g.Eq(p.SessionDir("s1"), dir)
+	g.Eq(p.SessionFile("s1"), filepath.Join(dir, "meta.json"))
+	g.Eq(p.LogFile("s1"), filepath.Join(dir, "std.log"))
+	g.Eq(p.DaemonLogFile("s1"), filepath.Join(dir, "daemon.log"))
+
+	// Saving the session created the directory and wrote the metadata into it.
+	g.E(os.WriteFile(p.LogFile("s1"), []byte("scrollback\n"), 0o600))
+	g.E(os.WriteFile(p.DaemonLogFile("s1"), []byte("diagnostics\n"), 0o600))
+
+	names := readDirNames(g, dir)
+	g.True(sliceHas(names, "meta.json"))
+	g.True(sliceHas(names, "std.log"))
+	g.True(sliceHas(names, "daemon.log"))
+
+	// Deleting the session takes the whole directory with it.
+	g.E(st.DeleteSession("s1"))
+
+	_, err := os.Stat(dir)
+	g.True(os.IsNotExist(err))
+}
+
+// A directory under sessions/ with no readable metadata — one half-written by a
+// concurrent create, or left behind by hand — is skipped, not listed as a broken
+// session and not an error for every other reader.
+func TestListSkipsDirWithoutMetadata(t *testing.T) {
+	g := got.T(t)
+
+	p := config.Paths{Home: t.TempDir(), Runtime: t.TempDir()}
+	g.E(p.EnsureDirs())
+	st := store.New(p)
+
+	g.E(st.SaveSession(sess("good", "good", store.DefaultNamespace, 1)))
+	g.E(os.MkdirAll(p.SessionDir("orphan"), 0o700))
+
+	list, err := st.ListSessions()
+	g.E(err)
+	g.Len(list, 1)
+	g.Eq(list[0].ID, "good")
+}
+
+func readDirNames(g got.G, dir string) []string {
+	g.Helper()
+
+	entries, err := os.ReadDir(dir)
+	g.E(err)
+
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+
+	return names
 }
 
 // sliceHas reports whether v is present in list.

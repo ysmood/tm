@@ -64,6 +64,13 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 		return nil, err
 	}
 
+	// The session's log lives in the session's own directory, which normally
+	// exists already (the store wrote the metadata there); create it anyway so a
+	// daemon started against a hand-made session still records its scrollback.
+	if err := p.EnsureSessionDir(sess.ID); err != nil {
+		return nil, err
+	}
+
 	sb, err := NewScrollback(p.LogFile(sess.ID))
 	if err != nil {
 		return nil, err
