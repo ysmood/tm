@@ -82,6 +82,12 @@ const (
 	// run from within the session's shell, this very process) with it, so the menu
 	// quits and app.Run tears the relay down around the kill.
 	ActionKillCurrent
+	// ActionHistory is [history] aimed at Result.ID: page that session's recorded
+	// scrollback log in less, the way `git show` opens its output in a pager.
+	// Unlike a clear — done inline — the pager takes over the whole terminal, so
+	// (like an attach) the menu quits and app.Run runs less after it has torn down,
+	// then reopens the menu.
+	ActionHistory
 )
 
 // Result is the menu's outcome: what to do, and which session it applies to.
@@ -97,6 +103,7 @@ const (
 	cmdRenameSession
 	cmdKillSession
 	cmdClearHistory
+	cmdHistory
 	cmdDetachSession
 	cmdExit
 	cmdUseNamespace
@@ -122,6 +129,7 @@ var palette = []paletteCmd{
 	{cmdNewSession, "[new session]", "ctrl+t", "Ctrl-T"},
 	{cmdRenameSession, "[rename session]", "", ""},
 	{cmdKillSession, "[kill session]", "", ""},
+	{cmdHistory, "[history]", "", ""},
 	{cmdClearHistory, "[clear history]", "", ""},
 	{cmdDetachSession, "[detach session]", "ctrl+\\", "Ctrl-\\"},
 	{cmdExit, "[exit]", "", ""},
@@ -169,6 +177,10 @@ type killPayload struct{ id, name string }
 // whose history to wipe, and its name for the notice printed afterwards.
 type clearPayload struct{ id, name string }
 
+// historyPayload is the data attached to a history-chooser row: the session
+// whose recorded scrollback log app.Run pages in less.
+type historyPayload struct{ id string }
+
 // currentHint marks the session this menu is framed inside in choosers that
 // keep it (rename, kill, clear history), so it reads apart from the others —
 // and picking it in the kill chooser, which also ends what is on this
@@ -191,6 +203,7 @@ const (
 	pickRenameSession
 	pickKillSession
 	pickClearHistory
+	pickHistory
 	pickUseNamespace
 	pickDropNamespace
 )
@@ -482,6 +495,40 @@ func (m *Model) showClearSessions() bool {
 	return true
 }
 
+// showHistorySessions lists the sessions [history] can target, and reports false
+// when the namespace holds none, so the caller says so rather than opening an
+// empty picker. Like the clear chooser it keeps the session this tm is running
+// inside — marked "current" — since paging your own session's scrollback is a
+// common case, and viewing it in less disturbs nothing on screen (less restores
+// the terminal on quit).
+func (m *Model) showHistorySessions() bool {
+	sessions, _ := m.st.ListByNamespace(m.ns)
+	if len(sessions) == 0 {
+		return false
+	}
+
+	items := make([]pickerItem, 0, len(sessions))
+
+	for _, s := range sessions {
+		item := pickerItem{
+			label:   m.sessionLabel(s),
+			text:    s.Name,
+			payload: historyPayload{id: s.ID},
+		}
+		if s.ID == m.curSessionID {
+			item.hint = currentHint
+		}
+
+		items = append(items, item)
+	}
+
+	m.mode = modePick
+	m.pickFor = pickHistory
+	m.pick.setItems(items)
+
+	return true
+}
+
 func (m *Model) showNamespaces(p pickPurpose) {
 	m.mode = modePick
 	m.pickFor = p
@@ -713,6 +760,10 @@ func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
 		if p, ok := it.payload.(clearPayload); ok {
 			return m.clearHistory(p)
 		}
+	case pickHistory:
+		if p, ok := it.payload.(historyPayload); ok {
+			return m.viewHistory(p)
+		}
 	case pickUseNamespace:
 		return m.selectNamespace(it.payload)
 	case pickDropNamespace:
@@ -740,6 +791,16 @@ func (m Model) selectNamespace(payload any) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openChooser opens one of the session-target sub-pickers (rename, kill, clear,
+// history) via show, or sets emptyMsg as the status when the namespace holds no
+// sessions to act on — so the command says so rather than opening an empty
+// picker. show reports whether it opened a chooser (see showKillSessions et al).
+func (m *Model) openChooser(show func() bool, emptyMsg string) {
+	if !show() {
+		m.status = emptyMsg
+	}
+}
+
 func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	if !p.isCmd {
 		return m.attach(p.sess.ID)
@@ -749,23 +810,15 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	case cmdNewSession:
 		m.enterInput(inputNewSession, "New session name:", m.ctrl.DefaultSessionName(m.targetNamespace()))
 	case cmdRenameSession:
-		// Pick the session to rename first (the name prompt follows), unless the
-		// namespace is empty — then there is nothing to pick.
-		if !m.showRenameSessions() {
-			m.status = "no sessions to rename"
-		}
+		// Each of these opens a chooser to pick the session to act on first (a
+		// rename then prompts for the name), or notes there is nothing to pick.
+		m.openChooser(m.showRenameSessions, "no sessions to rename")
 	case cmdKillSession:
-		// Pick the session to kill first, unless the namespace is empty — then
-		// there is nothing to pick.
-		if !m.showKillSessions() {
-			m.status = "no sessions to kill"
-		}
+		m.openChooser(m.showKillSessions, "no sessions to kill")
 	case cmdClearHistory:
-		// Pick the session whose history to wipe first, unless the namespace is
-		// empty — then there is nothing to pick.
-		if !m.showClearSessions() {
-			m.status = "no sessions to clear"
-		}
+		m.openChooser(m.showClearSessions, "no sessions to clear")
+	case cmdHistory:
+		m.openChooser(m.showHistorySessions, "no sessions to view")
 	case cmdDetachSession:
 		// Detach from the current session back to the top-level menu (the session
 		// keeps running); app.Run carries that out. Reported as ActionDetach — not a
@@ -841,6 +894,17 @@ func (m Model) clearHistory(p clearPayload) (tea.Model, tea.Cmd) {
 	m.showMenu()
 
 	return m, m.printNotice(attach.ClearedHistoryNotice(p.name))
+}
+
+// viewHistory records the [history] pick and quits so app.Run can page the
+// chosen session's recorded scrollback log in less once the menu has torn down.
+// Like attach it does no work here: the pager takes over the whole terminal, so
+// it can only run after Bubble Tea has released it (see ActionHistory).
+func (m Model) viewHistory(p historyPayload) (tea.Model, tea.Cmd) {
+	m.result = Result{Action: ActionHistory, ID: p.id}
+	m.quit = true
+
+	return m, tea.Quit
 }
 
 // createNamespace makes ns and switches the active view to it. It backs the
@@ -1145,6 +1209,7 @@ func (m Model) viewHelp() string {
 		{"[rename session]", "rename a session; it keeps running"},
 		{"[kill session]", "end a session's shell and delete it (the current one too)"},
 		{"[clear history]", "wipe a session's recorded scrollback (its log file) — e.g. leaked secrets"},
+		{"[history]", "page a session's recorded scrollback in less (like git show)"},
 		{"[detach session]", "detach back to the menu; the session keeps running (shown inside a session)"},
 		{"[exit]", "leave tm; every session keeps running"},
 		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},

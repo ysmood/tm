@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -387,6 +388,15 @@ func runMenu(st *store.Store, ctrl *controller) error {
 			continue
 		}
 
+		// [history] pages a session's log in less, then reopens the menu with the
+		// same framing (curID/curName/curAlt unchanged — the session this menu sits
+		// over is untouched).
+		if res.Action == tui.ActionHistory {
+			status = viewSessionHistory(st.Paths(), res.ID)
+
+			continue
+		}
+
 		targetID, replay, leave, toMenu := pickTarget(res, curID, curAlt)
 
 		if toMenu || leave {
@@ -489,6 +499,37 @@ func killCurrentSession(ctrl *controller, curID, curName string, curAlt bool) me
 	_, _ = os.Stdout.Write(attach.KilledCurrentSessionNotice(curName))
 
 	return menuState{}
+}
+
+// viewSessionHistory pages a session's log (see viewHistory) and returns the
+// status to reopen the menu with — empty on success, the failure otherwise, so
+// a pager that could not start (say, less not on PATH) is reported rather than
+// silently swallowed.
+func viewSessionHistory(p config.Paths, id string) string {
+	if err := viewHistory(p, id); err != nil {
+		return "failed to view history: " + err.Error()
+	}
+
+	return ""
+}
+
+// viewHistory pages a session's recorded scrollback log in less, connected to
+// the terminal, and returns once the user quits the pager. It is how [history]
+// shows a session's past output — the raw std.log the daemon records — the way
+// `git show` opens its output in a pager. The -R flag passes the log's ANSI
+// color escapes through so the history renders in color rather than as literal
+// escape sequences.
+//
+// It can only run once the menu (or relay) has released the terminal: less
+// takes it over wholesale. The log file always exists for a session in the
+// store — the daemon creates it on spawn — so a missing file is not special-cased.
+func viewHistory(p config.Paths, id string) error {
+	cmd := exec.Command("less", "-R", p.LogFile(id))
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
 }
 
 // announceAttach writes the terminal reset and status notice for moving the relay
@@ -622,6 +663,14 @@ func runInSession(ctrl *controller) error {
 		// is usually gone before KillSession even returns.
 		if kerr := ctrl.KillSession(res.ID); kerr != nil {
 			fmt.Fprintln(os.Stderr, "tm: kill session:", kerr)
+		}
+	}
+
+	if res.Action == tui.ActionHistory {
+		// Page the chosen session's log in less, then drop back to the shell this
+		// inner tm was launched from (this menu runs once and returns).
+		if herr := viewHistory(ctrl.st.Paths(), res.ID); herr != nil {
+			fmt.Fprintln(os.Stderr, "tm: view history:", herr)
 		}
 	}
 

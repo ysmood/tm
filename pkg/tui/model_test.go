@@ -598,6 +598,58 @@ func TestModelClearHistoryNoSessions(t *testing.T) {
 	g.Has(m.headerTitle(), "no sessions to clear")
 }
 
+// [history] picks a session and resolves to ActionHistory so app.Run can page
+// its recorded scrollback in less once the menu has torn down. Unlike a clear it
+// quits the menu (the pager needs the whole terminal) and touches no controller.
+func TestModelHistory(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "h1", Name: "past", Namespace: store.DefaultNamespace}))
+
+	m := New(st, fakeCtrl{})
+
+	m = typeStr(m, "[history")
+	m = send(m, keyEnterMsg) // [history] -> the session chooser
+	g.Eq(m.pickFor, pickHistory)
+
+	next, cmd := m.Update(keyEnterMsg) // the only session
+	m = next.(Model)
+
+	// It quits with the pick recorded; app.Run pages h1's log after teardown.
+	g.True(m.quit)
+	g.NotNil(cmd)
+	g.Eq(m.Result(), Result{Action: ActionHistory, ID: "h1"})
+}
+
+// The history chooser keeps the session this tm is running inside, marked
+// "current", since paging your own session's scrollback is a common case.
+func TestModelHistoryCurrentSession(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+
+	m := New(st, sessCtrl{id: "cur", name: "current"})
+	m = send(typeStr(m, "[history"), keyEnterMsg)
+
+	g.Eq(m.pickFor, pickHistory)
+	g.Len(m.pick.all, 1) // the current session is listed, marked
+
+	it := m.pick.all[0]
+	_, ok := it.payload.(historyPayload)
+	g.True(ok)
+	g.Eq(it.hint, currentHint)
+}
+
+// With no sessions in the namespace [history] says so instead of opening an
+// empty chooser.
+func TestModelHistoryNoSessions(t *testing.T) {
+	g := got.T(t)
+
+	m := send(typeStr(New(newStore(g, t), fakeCtrl{}), "[history"), keyEnterMsg)
+	g.Eq(m.pickFor, pickMenu)
+	g.Has(m.headerTitle(), "no sessions to view")
+}
+
 func mustGet(g got.G, st *store.Store, id string) store.Session {
 	s, err := st.GetSession(id)
 	g.E(err)
@@ -791,9 +843,9 @@ func TestModelShortcutHintHighlightsOnFocus(t *testing.T) {
 	g.Has(v, th.sel.Render("Ctrl-T"))
 	g.Has(v, th.key.Render(`Ctrl-\`))
 
-	// Down past [rename session], [kill session] and [clear history] onto
-	// [detach session]: now its Ctrl-\ is highlighted and Ctrl-T is dim.
-	v = send(send(send(send(m, keyDownMsg), keyDownMsg), keyDownMsg), keyDownMsg).View().Content
+	// Down past [rename session], [kill session], [clear history] and [history]
+	// onto [detach session]: now its Ctrl-\ is highlighted and Ctrl-T is dim.
+	v = send(send(send(send(send(m, keyDownMsg), keyDownMsg), keyDownMsg), keyDownMsg), keyDownMsg).View().Content
 	g.Has(v, th.sel.Render(`Ctrl-\`))
 	g.Has(v, th.key.Render("Ctrl-T"))
 }

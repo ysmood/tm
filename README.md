@@ -91,6 +91,16 @@ else to show.
 tm then prints `[tm cleared history of session <name>]` above the menu, so the change stays in
 your scrollback.
 
+### View a session's history
+
+The command is `[history]`. You just type words like `history`, `[h`, etc. and hit enter.
+
+Pick the session whose recorded output you want to read — including the one you are currently
+inside, marked `current`. tm opens its log file in `less -R`, the same way `git show` opens its
+output in a pager, so the whole scrollback is scrollable and searchable and the log's colors are
+preserved. The session keeps running and nothing on your screen is disturbed; quit the pager (`q`)
+to return to the menu.
+
 ### Attach to a session
 
 Each session will be listed with its name, just type in the name of the session you want to attach to and hit enter. You will be attached to that session.
