@@ -85,10 +85,6 @@ func TestFirstLaunchAttachErasesPicker(t *testing.T) {
 
 	_, err = pt.Write([]byte("aaa\r"))
 	g.E(err)
-	g.True(waitForText(buf, "All history", 10*time.Second))
-
-	_, err = pt.Write([]byte("\r"))
-	g.E(err)
 	g.True(waitForText(buf, "AAA-HIST-MARK", 10*time.Second))
 
 	time.Sleep(500 * time.Millisecond)

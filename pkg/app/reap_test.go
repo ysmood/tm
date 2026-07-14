@@ -83,9 +83,7 @@ func TestMenuReapsUnreachableSession(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Select the now-dead session and try to attach -> relay fails to dial.
-	send("\r") // pick the session -> scrollback chooser
-	g.True(waitForText(buf, "All history", 5*time.Second))
-	send("\r") // attach -> bounces back to the menu
+	send("\r") // pick the session -> attach -> bounces back to the menu
 	time.Sleep(1500 * time.Millisecond)
 
 	// The fix: the dead session is reaped, so it is gone from the store and the

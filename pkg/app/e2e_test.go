@@ -211,7 +211,7 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 
-	// Each repeated menu/chooser ("session:", "All history") is matched only in the
+	// Each repeated menu render ("session:", a notice) is matched only in the
 	// output produced after the keystroke that should redraw it (waitForTextFrom
 	// from a mark), never against the same token left in the buffer by an earlier
 	// screen. Otherwise the wait returns on the stale copy and the next key is sent
@@ -222,9 +222,7 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 	g.True(waitForText(buf, "aaa", 10*time.Second))
 	mark := len(buf.String())
 
-	send("aaa\r") // pick aaa -> scrollback chooser
-	g.True(waitForTextFrom(buf, mark, "All history", 10*time.Second))
-	send("\r") // attach with all history
+	send("aaa\r") // picking a session attaches (or switches) straight away
 	time.Sleep(800 * time.Millisecond)
 
 	// Entering a session from the top-level menu prints a notice naming it.
@@ -243,9 +241,7 @@ func TestMenuKeySwitchesAndResumes(t *testing.T) {
 
 	mark = len(buf.String())
 
-	send("bbb\r") // pick bbb -> scrollback chooser
-	g.True(waitForTextFrom(buf, mark, "All history", 10*time.Second))
-	send("\r") // switch to bbb in place
+	send("bbb\r") // picking a session attaches (or switches) straight away
 	time.Sleep(1*time.Second + 200*time.Millisecond)
 
 	// Switching from the in-session menu prints a notice naming the target.
@@ -332,9 +328,7 @@ func TestMenuKeyOpensInline(t *testing.T) {
 
 	// Attach to aaa and print a marker we expect to stay on screen.
 	g.True(waitForText(buf, "aaa", 10*time.Second))
-	send("aaa\r")
-	g.True(waitForText(buf, "All history", 10*time.Second))
-	send("\r")
+	send("aaa\r") // picking a session attaches (or switches) straight away
 	time.Sleep(800 * time.Millisecond)
 
 	send("echo INLINE-MARK-$((6*7))\r")
@@ -442,9 +436,7 @@ func TestSessionExitReturnsToMenu(t *testing.T) {
 
 	// Attach to aaa, then confirm we are in its live shell.
 	g.True(waitForText(buf, "aaa", 10*time.Second))
-	send("aaa\r")
-	g.True(waitForText(buf, "All history", 10*time.Second))
-	send("\r")
+	send("aaa\r") // picking a session attaches (or switches) straight away
 	time.Sleep(800 * time.Millisecond)
 
 	send("echo IN-SHELL-$((6*7))\r")
@@ -523,9 +515,7 @@ func TestDetachFromSessionReturnsToMenu(t *testing.T) {
 
 	// Attach to aaa and confirm we are in its live shell.
 	g.True(waitForText(buf, "aaa", 10*time.Second))
-	send("aaa\r")
-	g.True(waitForText(buf, "All history", 10*time.Second))
-	send("\r")
+	send("aaa\r") // picking a session attaches (or switches) straight away
 	time.Sleep(800 * time.Millisecond)
 
 	send("echo IN-SESSION-$((6*7))\r")
@@ -554,9 +544,7 @@ func TestDetachFromSessionReturnsToMenu(t *testing.T) {
 
 	// Re-attach from the top-level menu and run a command: it only reaches a still
 	// live session, proving detach kept both it and tm running.
-	send("aaa\r")
-	g.True(waitForText(buf, "All history", 10*time.Second))
-	send("\r")
+	send("aaa\r") // picking a session attaches (or switches) straight away
 	time.Sleep(800 * time.Millisecond)
 
 	send("echo BACK-$((6*7))\r")
@@ -616,9 +604,7 @@ func TestExitCommandLeavesTM(t *testing.T) {
 
 	// Attach to aaa and confirm we are in its live shell.
 	g.True(waitForText(buf, "aaa", 10*time.Second))
-	send("aaa\r")
-	g.True(waitForText(buf, "All history", 10*time.Second))
-	send("\r")
+	send("aaa\r") // picking a session attaches (or switches) straight away
 	time.Sleep(800 * time.Millisecond)
 
 	send("echo IN-SESSION-$((6*7))\r")
@@ -697,9 +683,7 @@ func TestMenuKeyResumeDoesNotReplay(t *testing.T) {
 
 	// Attach to aaa and print a marker.
 	g.True(waitForText(buf, "aaa", 10*time.Second))
-	send("aaa\r")
-	g.True(waitForText(buf, "All history", 10*time.Second))
-	send("\r")
+	send("aaa\r") // picking a session attaches (or switches) straight away
 	time.Sleep(800 * time.Millisecond)
 
 	send("echo RESUME-MARK-$((6*7))\r")
@@ -780,8 +764,8 @@ func waitForText(buf *safeBuilder, want string, timeout time.Duration) bool {
 
 // waitForTextFrom waits for want to appear in the output produced after byte
 // offset from. A plain waitForText scans the whole accumulated buffer, so a token
-// that already appeared earlier — a menu header that reopens ("session:"), the
-// scrollback chooser shown again ("All history") — matches the stale copy and
+// that already appeared earlier — a menu header that reopens ("session:"), a
+// notice printed once per attach — matches the stale copy and
 // returns instantly, letting the next keystroke be sent before the new screen has
 // rendered (which, under a loaded container, drops the key and either fails the
 // next assertion or hangs waiting for tm to exit). Marking the buffer length
@@ -851,7 +835,7 @@ func TestRelayUnderPTY(t *testing.T) {
 
 	defer func() { _ = pt.Close() }()
 
-	c := pt.Command(bin, "__attach", "--id", "rly", "--hist", "1") // hist=1 -> HistAll
+	c := pt.Command(bin, "__attach", "--id", "rly")
 
 	c.Env = os.Environ() // no CI=1 workaround needed on Bubble Tea v2
 	g.E(c.Start())
@@ -1023,11 +1007,7 @@ func TestMenuReattachCycle(t *testing.T) {
 		g.Desc("relaunch %d should list session %q: %q", i, name, buf.String()).
 			True(waitForText(buf, name, 10*time.Second))
 
-		send("\r") // the cursor starts on the first session; select it
-		g.Desc("relaunch %d should offer scrollback: %q", i, buf.String()).
-			True(waitForText(buf, "All history", 10*time.Second))
-
-		send("\r")                          // attach with full scrollback
+		send("\r")                          // the cursor starts on the first session; select it
 		time.Sleep(1000 * time.Millisecond) // let the relay re-attach
 
 		send("echo " + m + "-$((6*7))\r")

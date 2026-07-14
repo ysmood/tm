@@ -10,7 +10,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/ysmood/got"
 	"github.com/ysmood/tm/pkg/config"
-	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
 )
 
@@ -141,10 +140,9 @@ func TestModelInSessionSwitchesInsteadOfNesting(t *testing.T) {
 
 	m := New(st, sessCtrl{name: "current"})
 
-	m = send(m, keyEnterMsg) // the cursor starts on the session -> scrollback chooser
-	g.Eq(m.pickFor, pickScrollback)
-
-	next, cmd := m.Update(keyEnterMsg) // choose "All history"
+	// The cursor starts on the session: picking it resolves the menu in one press,
+	// with no history chooser in between.
+	next, cmd := m.Update(keyEnterMsg)
 	g.NotNil(cmd)
 
 	final := next.(Model)
@@ -156,7 +154,6 @@ func TestModelInSessionSwitchesInsteadOfNesting(t *testing.T) {
 	res := final.Result()
 	g.Eq(res.Action, ActionSwitch)
 	g.Eq(res.ID, "target")
-	g.Eq(res.Hist, proto.HistAll)
 }
 
 // Not inside a session, picking one resolves to an attach (run the relay on this
@@ -168,10 +165,8 @@ func TestModelNotInSessionAttaches(t *testing.T) {
 
 	m := New(st, fakeCtrl{})
 
-	m = send(m, keyEnterMsg) // the cursor starts on the session -> scrollback chooser
-	g.Eq(m.pickFor, pickScrollback)
-
-	next, cmd := m.Update(keyEnterMsg) // choose "All history"
+	// The cursor starts on the session: one press attaches, no history chooser.
+	next, cmd := m.Update(keyEnterMsg)
 	g.NotNil(cmd)
 
 	final := next.(Model)
@@ -180,7 +175,6 @@ func TestModelNotInSessionAttaches(t *testing.T) {
 	res := final.Result()
 	g.Eq(res.Action, ActionAttach)
 	g.Eq(res.ID, "sid")
-	g.Eq(res.Hist, proto.HistAll)
 }
 
 // Creating a new session spawns it and attaches in one step: the menu quits
@@ -201,9 +195,6 @@ func TestModelNewSessionAttachesImmediately(t *testing.T) {
 	res := final.Result()
 	g.Eq(res.Action, ActionAttach)
 	g.Eq(res.ID, "id") // fakeCtrl.CreateAndSpawn
-	// HistAll, not HistNone: replay history so the shell's first prompt is shown
-	// even when the daemon already printed it before the relay attached.
-	g.Eq(res.Hist, proto.HistAll)
 }
 
 // [rename session] picks a session, prefills its name, and writes the new one to

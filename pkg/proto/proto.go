@@ -42,65 +42,48 @@ const (
 	// connection once teardown is done, so the sender can block on a read to know
 	// the session is gone. No payload.
 	MsgKill
-	// MsgReplayDone marks the end of the history replay that follows a MsgAttach:
-	// every Output frame before it is recorded history, everything after is live.
-	// The relay uses it to treat the menu key differently mid-replay — pausing the
-	// replay instead of detaching — so a long history can be interrupted. Relays
-	// that predate it just ignore it. No payload.
-	MsgReplayDone
-	// MsgClear asks the daemon to wipe the session's recorded history: the
-	// in-memory scrollback ring is emptied and the log file truncated, so a later
-	// attach replays nothing of what came before (say, a secret echoed to the
-	// terminal). The session keeps running. The sender does not attach; the daemon
-	// closes the connection once the wipe is done, so the sender can block on a
-	// read to know it happened. No payload.
+	// MsgClear asks the daemon to wipe the session's recorded history: its log file
+	// is truncated, so a later attach replays nothing of what came before (say, a
+	// secret echoed to the terminal). The session keeps running. The sender does not
+	// attach; the daemon closes the connection once the wipe is done, so the sender
+	// can block on a read to know it happened. No payload.
 	MsgClear
 )
 
-// HistMode selects how much scrollback the daemon replays on attach.
-type HistMode byte
-
-const (
-	// HistNone replays nothing.
-	HistNone HistMode = iota
-	// HistAll replays the entire recorded log.
-	HistAll
-	// HistPage replays roughly one screen (the attach's row count).
-	HistPage
-	// HistLines replays the last Attach.Lines lines.
-	HistLines
-)
-
-// Attach is the payload of a MsgAttach frame.
+// Attach is the payload of a MsgAttach frame. Replay asks the daemon to send the
+// last window of recorded output (one screen, sized by Rows) before the live
+// stream: what an attach or a switch wants, so the session's screen is there to
+// look at. Resuming a session the terminal is still showing (esc out of the menu
+// opened over it) clears it, since that screen never went away.
 type Attach struct {
-	Hist  HistMode
-	Lines uint32 // used when Hist == HistLines
-	Cols  uint16
-	Rows  uint16
+	Replay bool
+	Cols   uint16
+	Rows   uint16
 }
 
 // Encode serializes the Attach payload.
 func (a Attach) Encode() []byte {
-	b := make([]byte, 9)
-	b[0] = byte(a.Hist)
-	binary.BigEndian.PutUint32(b[1:], a.Lines)
-	binary.BigEndian.PutUint16(b[5:], a.Cols)
-	binary.BigEndian.PutUint16(b[7:], a.Rows)
+	b := make([]byte, 5)
+	if a.Replay {
+		b[0] = 1
+	}
+
+	binary.BigEndian.PutUint16(b[1:], a.Cols)
+	binary.BigEndian.PutUint16(b[3:], a.Rows)
 
 	return b
 }
 
 // DecodeAttach parses an Attach payload.
 func DecodeAttach(p []byte) (Attach, error) {
-	if len(p) < 9 {
+	if len(p) < 5 {
 		return Attach{}, fmt.Errorf("proto: short attach payload: %d", len(p))
 	}
 
 	return Attach{
-		Hist:  HistMode(p[0]),
-		Lines: binary.BigEndian.Uint32(p[1:]),
-		Cols:  binary.BigEndian.Uint16(p[5:]),
-		Rows:  binary.BigEndian.Uint16(p[7:]),
+		Replay: p[0] != 0,
+		Cols:   binary.BigEndian.Uint16(p[1:]),
+		Rows:   binary.BigEndian.Uint16(p[3:]),
 	}, nil
 }
 
@@ -132,45 +115,39 @@ func DecodeResize(p []byte) (Resize, error) {
 }
 
 // SwitchTarget is the payload of MsgSwitch/MsgSwitchTo: the session to re-attach
-// to, its display name (for the relay's status notice), and how much of its
-// history to replay.
+// to and its display name (for the relay's status notice). The relay always
+// replays the target's last window, so there is nothing to say about history.
 type SwitchTarget struct {
-	ID    string
-	Name  string
-	Hist  HistMode
-	Lines uint32
+	ID   string
+	Name string
 }
 
-// Encode serializes the SwitchTarget payload: hist, lines, the id length, then
-// the id bytes followed by the name bytes. The id is length-prefixed so the name
-// (variable length, may be empty) can trail it.
+// Encode serializes the SwitchTarget payload: the id length, then the id bytes
+// followed by the name bytes. The id is length-prefixed so the name (variable
+// length, may be empty) can trail it.
 func (s SwitchTarget) Encode() []byte {
-	b := make([]byte, 7+len(s.ID)+len(s.Name))
-	b[0] = byte(s.Hist)
-	binary.BigEndian.PutUint32(b[1:], s.Lines)
-	binary.BigEndian.PutUint16(b[5:], uint16(len(s.ID)))
-	n := copy(b[7:], s.ID)
-	copy(b[7+n:], s.Name)
+	b := make([]byte, 2+len(s.ID)+len(s.Name))
+	binary.BigEndian.PutUint16(b, uint16(len(s.ID)))
+	n := copy(b[2:], s.ID)
+	copy(b[2+n:], s.Name)
 
 	return b
 }
 
 // DecodeSwitchTarget parses a SwitchTarget payload.
 func DecodeSwitchTarget(p []byte) (SwitchTarget, error) {
-	if len(p) < 7 {
+	if len(p) < 2 {
 		return SwitchTarget{}, fmt.Errorf("proto: short switch payload: %d", len(p))
 	}
 
-	idLen := int(binary.BigEndian.Uint16(p[5:]))
-	if len(p) < 7+idLen {
+	idLen := int(binary.BigEndian.Uint16(p))
+	if len(p) < 2+idLen {
 		return SwitchTarget{}, fmt.Errorf("proto: short switch payload: %d", len(p))
 	}
 
 	return SwitchTarget{
-		Hist:  HistMode(p[0]),
-		Lines: binary.BigEndian.Uint32(p[1:]),
-		ID:    string(p[7 : 7+idLen]),
-		Name:  string(p[7+idLen:]),
+		ID:   string(p[2 : 2+idLen]),
+		Name: string(p[2+idLen:]),
 	}, nil
 }
 

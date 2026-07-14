@@ -72,11 +72,9 @@ func TestCtrlBackslashEscPreservesPrompt(t *testing.T) {
 		}
 	}
 
-	// Pick session aaa from the relay menu, with all history -> attach.
+	// Pick session aaa from the relay menu -> attach.
 	step("menu-shown", "new session")
 	send("aaa\r")
-	step("scrollback-shown", "All history")
-	send("\r")
 	time.Sleep(1000 * time.Millisecond)
 
 	// Give the session shell a distinctive prompt, then settle on it. The prompt

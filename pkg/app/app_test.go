@@ -65,7 +65,7 @@ func TestSpawnDetachedDaemon(t *testing.T) {
 	defer func() { _ = nc.Close() }()
 
 	c := proto.NewConn(nc)
-	g.E(c.Write(proto.MsgAttach, proto.Attach{Hist: proto.HistNone, Cols: 80, Rows: 24}.Encode()))
+	g.E(c.Write(proto.MsgAttach, proto.Attach{Cols: 80, Rows: 24}.Encode()))
 	g.E(c.Write(proto.MsgInput, []byte("echo spawned-ok\n")))
 	g.True(readContains(nc, c, "spawned-ok", 10*time.Second))
 

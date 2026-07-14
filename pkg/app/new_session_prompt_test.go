@@ -16,7 +16,7 @@ import (
 // and asserts the shell's first prompt is visible immediately, without typing
 // anything. The daemon reports ready as soon as the shell starts, which can be
 // after the shell has already written its prompt into scrollback (common on
-// Linux, rare on macOS); a new session must therefore replay history (HistAll) so
+// Linux, rare on macOS); a new session must therefore replay its window so
 // that captured prompt is shown, instead of opening to a blank screen until the
 // user presses Enter.
 func TestNewSessionShowsInitialPrompt(t *testing.T) {

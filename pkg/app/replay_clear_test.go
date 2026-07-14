@@ -77,13 +77,13 @@ func TestReattachReplaysHistoryPastClear(t *testing.T) {
 
 	_ = pt.Close()
 
-	// Re-attach with all history (hist=1 => HistAll).
+	// Re-attach: the replay redraws the session's last window from its log.
 	pt2, err := gopty.New()
 	g.E(err)
 	g.E(pt2.Resize(120, 40))
 	g.Cleanup(func() { _ = pt2.Close() })
 
-	c2 := pt2.Command(bin, "__attach", "--id", "clr", "--hist", "1")
+	c2 := pt2.Command(bin, "__attach", "--id", "clr")
 	c2.Env = os.Environ()
 	g.E(c2.Start())
 

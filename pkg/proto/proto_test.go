@@ -30,7 +30,7 @@ func TestFrameRoundTrip(t *testing.T) {
 
 func TestAttachRoundTrip(t *testing.T) {
 	g := got.T(t)
-	in := proto.Attach{Hist: proto.HistLines, Lines: 42, Cols: 120, Rows: 40}
+	in := proto.Attach{Replay: true, Cols: 120, Rows: 40}
 	out, err := proto.DecodeAttach(in.Encode())
 	g.E(err)
 	g.Eq(out, in)
@@ -62,9 +62,9 @@ func TestSwitchTargetRoundTrip(t *testing.T) {
 		g.Eq(out, in)
 	}
 
-	check(proto.SwitchTarget{ID: "abc123", Name: "my session", Hist: proto.HistAll, Lines: 7})
-	check(proto.SwitchTarget{ID: "abc123", Name: "", Hist: proto.HistNone, Lines: 0}) // no name
-	check(proto.SwitchTarget{ID: "", Name: "orphan", Hist: proto.HistPage, Lines: 0}) // no id
+	check(proto.SwitchTarget{ID: "abc123", Name: "my session"})
+	check(proto.SwitchTarget{ID: "abc123", Name: ""})  // no name
+	check(proto.SwitchTarget{ID: "", Name: "orphan"})  // no id
 }
 
 func TestDecodeShortPayloads(t *testing.T) {
@@ -75,7 +75,9 @@ func TestDecodeShortPayloads(t *testing.T) {
 	g.Err(err)
 	_, err = proto.DecodeExit(nil)
 	g.Err(err)
-	_, err = proto.DecodeSwitchTarget([]byte{1, 2, 3, 4, 5}) // shorter than the 7-byte header
+	_, err = proto.DecodeSwitchTarget([]byte{1}) // shorter than the 2-byte id-length header
+	g.Err(err)
+	_, err = proto.DecodeSwitchTarget([]byte{0, 9, 'a'}) // header promises 9 id bytes, 1 follows
 	g.Err(err)
 }
 

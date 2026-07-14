@@ -4,17 +4,15 @@
 // relay or, inside a session, switching it — once the menu has torn down, so the
 // inline picker is erased from the screen first. The menu itself runs no relay.
 //
-// Every menu — the main list, the scrollback chooser, the namespace chooser —
-// is the same type-to-filter picker (see picker.go), so they share keys and
-// behavior. All text entry — the picker's filter and the free-text prompts
-// (naming a session, a custom line count) — is a single-line textarea built by
-// newInput.
+// Every menu — the main list, the kill/rename/clear choosers, the namespace
+// chooser — is the same type-to-filter picker (see picker.go), so they share keys
+// and behavior. All text entry — the picker's filter and the free-text prompts
+// (naming a session) — is a single-line textarea built by newInput.
 package tui
 
 import (
 	"runtime/debug"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -23,7 +21,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ysmood/tm/pkg/attach"
-	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
 )
 
@@ -48,9 +45,9 @@ type Controller interface {
 	// shell and removes the session's files. A session whose daemon is unreachable
 	// (already dead) is removed from the store directly.
 	KillSession(id string) error
-	// ClearHistory wipes the session's recorded history — its daemon empties the
-	// in-memory scrollback and truncates the log file — so nothing of it can leak
-	// through a later replay. The session keeps running.
+	// ClearHistory wipes the session's recorded history — its daemon truncates the
+	// log file it records to — so nothing of it can leak through a later replay.
+	// The session keeps running.
 	ClearHistory(id string) error
 }
 
@@ -87,12 +84,10 @@ const (
 	ActionKillCurrent
 )
 
-// Result is the menu's outcome: what to do and the chosen session's replay.
+// Result is the menu's outcome: what to do, and which session it applies to.
 type Result struct {
 	Action Action
 	ID     string
-	Hist   proto.HistMode
-	Lines  uint32
 }
 
 type cmdID int
@@ -180,17 +175,10 @@ type clearPayload struct{ id, name string }
 // terminal, is a deliberate act.
 const currentHint = "current"
 
-// scrollbackPayload is the data attached to a scrollback-chooser row.
-type scrollbackPayload struct {
-	hist   proto.HistMode
-	lines  uint32
-	custom bool // prompt for a line count instead of attaching directly
-}
-
 type mode int
 
 const (
-	modePick  mode = iota // a type-to-filter menu (main, scrollback, namespace)
+	modePick  mode = iota // a type-to-filter menu (main, namespace)
 	modeInput             // a free-text prompt
 	modeHelp              // the detailed help screen ([help] command)
 )
@@ -200,7 +188,6 @@ type pickPurpose int
 
 const (
 	pickMenu pickPurpose = iota
-	pickScrollback
 	pickRenameSession
 	pickKillSession
 	pickClearHistory
@@ -213,7 +200,6 @@ type inputPurpose int
 const (
 	inputNewSession inputPurpose = iota
 	inputRenameSession
-	inputCustomLines
 )
 
 // Model is the Bubble Tea menu model.
@@ -496,18 +482,6 @@ func (m *Model) showClearSessions() bool {
 	return true
 }
 
-func (m *Model) showScrollback() {
-	m.mode = modePick
-	m.pickFor = pickScrollback
-	m.pick.setItems([]pickerItem{
-		{label: "All history", payload: scrollbackPayload{hist: proto.HistAll}},
-		{label: "One page", payload: scrollbackPayload{hist: proto.HistPage}},
-		{label: "Last 100 lines", payload: scrollbackPayload{hist: proto.HistLines, lines: 100}},
-		{label: "Last 1000 lines", payload: scrollbackPayload{hist: proto.HistLines, lines: 1000}},
-		{label: "Custom number of lines…", payload: scrollbackPayload{custom: true}},
-	})
-}
-
 func (m *Model) showNamespaces(p pickPurpose) {
 	m.mode = modePick
 	m.pickFor = p
@@ -583,14 +557,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // runs the relay or switches here: app.Run does that once the menu has fully torn
 // down, so the inline picker is erased before the target session's output lands
 // (like fzf clearing its prompt on exit). Inside a session the pick switches that
-// session's relay; otherwise it attaches a relay on this terminal.
-func (m Model) attach(id string, hist proto.HistMode, lines uint32) (Model, tea.Cmd) {
+// session's relay; otherwise it attaches a relay on this terminal. Either way the
+// session's last window of output is replayed on arrival — there is no history to
+// choose from, so picking a session is one keypress.
+func (m Model) attach(id string) (Model, tea.Cmd) {
 	action := ActionAttach
 	if m.curSession != "" {
 		action = ActionSwitch
 	}
 
-	m.result = Result{Action: action, ID: id, Hist: hist, Lines: lines}
+	m.result = Result{Action: action, ID: id}
 	m.quit = true
 
 	return m, tea.Quit
@@ -724,10 +700,6 @@ func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
 		if p, ok := it.payload.(menuPayload); ok {
 			return m.selectMenu(p)
 		}
-	case pickScrollback:
-		if p, ok := it.payload.(scrollbackPayload); ok {
-			return m.selectScrollback(p)
-		}
 	case pickRenameSession:
 		if p, ok := it.payload.(renamePayload); ok {
 			m.pendingID, m.pendingName = p.id, p.name
@@ -770,10 +742,7 @@ func (m Model) selectNamespace(payload any) (tea.Model, tea.Cmd) {
 
 func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	if !p.isCmd {
-		m.pendingID = p.sess.ID
-		m.showScrollback()
-
-		return m, nil
+		return m.attach(p.sess.ID)
 	}
 
 	switch p.cmdID {
@@ -823,19 +792,6 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
-}
-
-func (m Model) selectScrollback(p scrollbackPayload) (tea.Model, tea.Cmd) {
-	if p.custom {
-		m.enterInput(inputCustomLines, "Number of lines:", "")
-
-		return m, nil
-	}
-
-	id := m.pendingID
-	m.showMenu()
-
-	return m.attach(id, p.hist, p.lines)
 }
 
 // killSession ends the chosen session: the controller asks its daemon to shut
@@ -983,14 +939,14 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Replay history (HistAll, not HistNone) so the shell's first prompt shows
-		// up. The daemon reports ready as soon as the shell starts, which can be
-		// after it has already printed its prompt into scrollback — common on Linux,
-		// rare on macOS — so without a replay the prompt is captured but never sent
-		// and the new session opens to a blank screen until the user presses Enter.
-		// A brand-new session's "all history" is just that prompt, so this replays
-		// nothing more.
-		return m.attach(id, proto.HistAll, 0)
+		// The attach replays the session's window, which is what makes the shell's
+		// first prompt show up: the daemon reports ready as soon as the shell starts,
+		// which can be after it has already printed its prompt into the log — common
+		// on Linux, rare on macOS — so without a replay the prompt is recorded but
+		// never sent, and the new session opens to a blank screen until the user
+		// presses Enter. A brand-new session's window is just that prompt, so the
+		// replay shows nothing more.
+		return m.attach(id)
 	case inputRenameSession:
 		// A rejected name (empty, or one a sibling session already holds) leaves the
 		// prompt open with the typed text intact — the header carries the reason — so
@@ -1015,18 +971,6 @@ func (m Model) submitInput(val string) (tea.Model, tea.Cmd) {
 		}
 
 		return m, m.printNotice(attach.RenamedSessionNotice(old, val))
-	case inputCustomLines:
-		n, err := strconv.Atoi(val)
-		if err != nil || n <= 0 {
-			m.status = "enter a positive number"
-
-			return m, nil
-		}
-
-		id := m.pendingID
-		m.showMenu()
-
-		return m.attach(id, proto.HistLines, uint32(n))
 	}
 
 	return m, nil
@@ -1200,7 +1144,7 @@ func (m Model) viewHelp() string {
 		{"[new session]", "create and start a new session"},
 		{"[rename session]", "rename a session; it keeps running"},
 		{"[kill session]", "end a session's shell and delete it (the current one too)"},
-		{"[clear history]", "wipe a session's scrollback — log file and memory — e.g. leaked secrets"},
+		{"[clear history]", "wipe a session's recorded scrollback (its log file) — e.g. leaked secrets"},
 		{"[detach session]", "detach back to the menu; the session keeps running (shown inside a session)"},
 		{"[exit]", "leave tm; every session keeps running"},
 		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},

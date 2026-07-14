@@ -4,37 +4,34 @@ import (
 	"os"
 	"slices"
 	"sync"
-
-	"github.com/ysmood/tm/pkg/proto"
 )
 
-// DefaultRingBytes is the in-memory scrollback kept for "page"/"N lines" replay.
-const DefaultRingBytes = 1 << 20 // 1 MiB
+// TailBytes bounds how much of the log file's end History reads to find the last
+// window of output. A window is one screen of lines, so this only has to be
+// comfortably more than a screenful of bytes — even a wide terminal's rows,
+// escape sequences and all, fit many times over. Reading a bounded tail (rather
+// than the whole file) keeps an attach cheap no matter how long the session has
+// been running.
+const TailBytes = 256 << 10 // 256 KiB
 
-// Scrollback records raw terminal output: a capped in-memory ring for recent
-// output plus an append-only log file for full ("all") history.
+// Scrollback records raw terminal output to an append-only log file, which is
+// the only place a session's history lives: nothing is buffered in memory, so an
+// attach reads its replay straight from the file.
 type Scrollback struct {
-	mu       sync.Mutex
-	ring     []byte
-	maxBytes int
-	log      *os.File
+	mu  sync.Mutex
+	log *os.File
 }
 
-// NewScrollback creates a scrollback keeping up to max bytes in memory and
-// appending all output to logPath (logPath may be empty to skip the log file).
-func NewScrollback(maxBytes int, logPath string) (*Scrollback, error) {
-	s := &Scrollback{maxBytes: maxBytes}
-
-	if logPath != "" {
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return nil, err
-		}
-
-		s.log = f
+// NewScrollback opens (creating it if needed) the log file the session appends
+// its output to. It is opened for reading too, so History can read back the tail
+// it just wrote.
+func NewScrollback(logPath string) (*Scrollback, error) {
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
 	}
 
-	return s, nil
+	return &Scrollback{log: f}, nil
 }
 
 // Write records a chunk of raw output.
@@ -45,54 +42,42 @@ func (s *Scrollback) Write(p []byte) {
 	if s.log != nil {
 		_, _ = s.log.Write(p)
 	}
-
-	s.ring = append(s.ring, p...)
-	if len(s.ring) > s.maxBytes {
-		trimmed := make([]byte, s.maxBytes)
-		copy(trimmed, s.ring[len(s.ring)-s.maxBytes:])
-		s.ring = trimmed
-	}
 }
 
-// History returns the bytes to replay for the requested mode. For HistAll it
-// reads the full log file (falling back to the ring if there is no log); for
-// HistPage/HistLines it returns the tail of the ring by line count.
-func (s *Scrollback) History(mode proto.HistMode, lines, rows int) []byte {
+// History returns the last window of recorded output to replay on attach: the
+// final rows lines of the log file (see TailBytes for the read bound).
+func (s *Scrollback) History(rows int) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	switch mode {
-	case proto.HistAll:
-		if s.log != nil {
-			if data, err := os.ReadFile(s.log.Name()); err == nil {
-				return data
-			}
-		}
-
-		return clone(s.ring)
-	case proto.HistPage:
-		if rows <= 0 {
-			rows = 24
-		}
-
-		return clone(tailLines(s.ring, rows))
-	case proto.HistLines:
-		return clone(tailLines(s.ring, lines))
-	default:
+	if s.log == nil || rows <= 0 {
 		return nil
 	}
+
+	info, err := s.log.Stat()
+	if err != nil {
+		return nil
+	}
+
+	size := info.Size()
+	off := max(size-TailBytes, 0)
+
+	buf := make([]byte, size-off)
+	if _, err := s.log.ReadAt(buf, off); err != nil {
+		return nil
+	}
+
+	return tailLines(buf, rows)
 }
 
-// Clear discards all recorded history: the in-memory ring is emptied and the
-// log file truncated in place. The file stays open — it was opened with
-// O_APPEND, so later writes land at the new (zero) end — and the session keeps
-// running; only its recorded past is dropped, so nothing of it (say, a secret
-// echoed to the terminal) can be replayed on a later attach.
+// Clear discards the session's recorded history by truncating the log file in
+// place. The file stays open — it was opened with O_APPEND, so later writes land
+// at the new (zero) end — and the session keeps running; only its recorded past
+// is dropped, so nothing of it (say, a secret echoed to the terminal) can be
+// replayed on a later attach.
 func (s *Scrollback) Clear() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	s.ring = nil
 
 	if s.log != nil {
 		return s.log.Truncate(0)
@@ -142,15 +127,4 @@ func tailLines(b []byte, n int) []byte {
 	}
 
 	return b
-}
-
-func clone(b []byte) []byte {
-	if len(b) == 0 {
-		return nil
-	}
-
-	out := make([]byte, len(b))
-	copy(out, b)
-
-	return out
 }

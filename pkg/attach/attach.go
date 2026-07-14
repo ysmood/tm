@@ -6,13 +6,11 @@ package attach
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"net"
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/muesli/cancelreader"
 	"github.com/ysmood/tm/pkg/config"
@@ -25,14 +23,6 @@ import (
 // tm for the shell). The session keeps running in the background while the menu is
 // up. Run reports the press to its caller, which reopens the menu and re-attaches.
 const DefaultMenuKey = 0x1c
-
-// InterruptKey is Ctrl-C (0x03). During a history replay it aborts the loading:
-// the relay drops the attachment (the session keeps running, the daemon stops
-// streaming the rest of the history) and returns OutcomeInterrupted so the
-// caller falls back to the top-level menu. Once the replay has finished it is
-// ordinary input, forwarded to the session like any other key (the shell's
-// SIGINT).
-const InterruptKey = 0x03
 
 // Leaving a session returns the local terminal to a sane baseline. A session's
 // PTY has its own terminal state, independent of the outer terminal's: a
@@ -114,8 +104,10 @@ func RestoreFor(inAltScreen bool) []byte {
 
 // Options configures an attach session.
 type Options struct {
-	Hist    proto.HistMode
-	Lines   uint32
+	// Replay asks the daemon to redraw the session's last window of output before
+	// the live stream. It is what an attach or a switch wants; resuming a session
+	// the terminal is still showing leaves it off.
+	Replay  bool
 	MenuKey byte
 	// Name is the display name of the session first attached to, used for the
 	// status notice printed if that session's shell exits. It is empty when the
@@ -138,12 +130,6 @@ const (
 	// the relay), so the session is gone. The caller returns to the top-level menu
 	// rather than leaving tm, so the user can pick or start another session.
 	OutcomeSessionExited
-	// OutcomeInterrupted means the user pressed Ctrl-C during a history replay:
-	// the replay was aborted (the session keeps running, the rest of the history
-	// is never loaded) and the attachment dropped. The caller returns to the
-	// top-level menu, so the user can re-enter the session with less history or
-	// pick another one.
-	OutcomeInterrupted
 )
 
 // Run connects to the session id under p, switches the terminal to raw mode, and
@@ -158,11 +144,7 @@ const (
 // alternate screen, so a caller that resets the terminal later (app.Run, when the
 // menu key returned OutcomeMenu and the user then detaches) knows whether the
 // reset must leave the alt screen or preserve the scrollback.
-// A non-nil Paused (returned only with OutcomeMenu) means the menu key landed
-// mid-history-replay: the attachment is suspended, not detached, so the caller
-// must either Resume it (esc back into the session) or Abort it (anything else)
-// once the menu closes.
-func Run(p config.Paths, id string, opt Options) (Outcome, bool, *Paused, error) {
+func Run(p config.Paths, id string, opt Options) (Outcome, bool, error) {
 	in, closeIn := openInput()
 	defer closeIn()
 
@@ -170,7 +152,7 @@ func Run(p config.Paths, id string, opt Options) (Outcome, bool, *Paused, error)
 	defer cancel()
 
 	return runRelay(opt, rd, os.Stdout, int(in.Fd()), true,
-		func(sid string) string { return proto.SockAddr(p, sid) }, id, nil)
+		func(sid string) string { return proto.SockAddr(p, sid) }, id)
 }
 
 // cancelInput wraps the relay's input so its pending read can be canceled once
@@ -206,12 +188,6 @@ type relay struct {
 	// channel synchronizes with, so a plain Load sees the right value.
 	menu atomic.Bool
 
-	// interrupt records that input ended because the user pressed Ctrl-C during a
-	// history replay (see InterruptKey), so the caller aborts the replay instead
-	// of opening the menu. Like menu, it is set just before the input-ended
-	// channel closes.
-	interrupt atomic.Bool
-
 	// alt records whether the current session has the outer terminal in the
 	// alternate screen buffer, tracked from the forwarded output. It decides whether
 	// leaving the session must send altScreenExit (which would drop scrollback if the
@@ -223,38 +199,8 @@ type relay struct {
 	// runs one chunk at a time, so it needs no lock.
 	altCarry []byte
 
-	// replaying is true between an attach and the daemon's MsgReplayDone: the
-	// output arriving is recorded history, not live. It decides what the menu key
-	// does — mid-replay it pauses the replay (see session) instead of detaching.
-	replaying atomic.Bool
-	// pauseReq asks pumpOutput to park at its next check so the menu can open over
-	// a paused replay. Set only by session, after the menu key arrived mid-replay.
-	pauseReq atomic.Bool
-	// pending is the unwritten tail of a frame pumpOutput was forwarding when it
-	// parked; the resumed pump flushes it first, continuing the byte stream exactly
-	// where it stopped. Handed between pump goroutines via their result channel, so
-	// it needs no lock.
-	pending []byte
-
 	mu   sync.Mutex
 	conn *proto.Conn // the session connection input is currently forwarded to
-}
-
-// relayFor returns the relay driving this invocation: when resuming, the
-// suspended one — its pending output, alt tracking and replay phase carry over —
-// with the pump unparked and the menu flag down for the fresh menu-key round;
-// otherwise a new relay.
-func relayFor(opt Options, resume *Paused) *relay {
-	if resume == nil {
-		return &relay{menuKey: opt.MenuKey, ready: make(chan struct{})}
-	}
-
-	r := resume.r
-	r.menu.Store(false)
-	r.interrupt.Store(false)
-	r.pauseReq.Store(false)
-
-	return r
 }
 
 func (r *relay) setConn(c *proto.Conn) {
@@ -276,18 +222,16 @@ func (r *relay) curConn() *proto.Conn {
 // tested without a real terminal. addrOf resolves a session id to its socket
 // address. It starts one input reader for the whole relay lifetime, then attaches
 // to id, re-attaching to the target whenever a session asks it to switch, and
-// returns when the user detaches or a session exits. A non-nil resume continues
-// that suspended attachment (its connection, pending output and replay state)
-// instead of dialing a new one.
+// returns when the user detaches or a session exits.
 func runRelay(
 	opt Options, in io.Reader, out io.Writer, inFd int, raw bool,
-	addrOf func(string) string, id string, resume *Paused,
-) (outcome Outcome, leftAlt bool, paused *Paused, err error) {
+	addrOf func(string) string, id string,
+) (outcome Outcome, leftAlt bool, err error) {
 	if opt.MenuKey == 0 {
 		opt.MenuKey = DefaultMenuKey
 	}
 
-	r := relayFor(opt, resume)
+	r := &relay{menuKey: opt.MenuKey, ready: make(chan struct{})}
 
 	// curName tracks the session the relay is currently on (updated as it switches
 	// internally), so the exit notice below names the right session.
@@ -296,7 +240,7 @@ func runRelay(
 	if raw && term.IsTerminal(inFd) {
 		restore, merr := rawTerminal(inFd)
 		if merr != nil {
-			return OutcomeInputEnded, false, nil, merr
+			return OutcomeInputEnded, false, merr
 		}
 
 		defer func() { restore(out, outcome, curName, r.alt.Load()) }()
@@ -314,26 +258,10 @@ func runRelay(
 
 	go r.inputLoop(in, ended, onEnd)
 
-	// cur is the suspended attachment to continue instead of dialing; only the
-	// first session iteration can be a resumption.
-	cur := resume
-
 	for {
-		next, oc, p, serr := r.session(addrOf(id), opt, out, ended, cur)
-		cur = nil
-
+		next, oc, serr := r.session(addrOf(id), opt, out, ended)
 		if serr != nil {
-			return OutcomeInputEnded, r.alt.Load(), nil, serr
-		}
-
-		if p != nil {
-			// The menu key mid-replay: the attachment is suspended, not detached. Hand
-			// the caller everything Resume needs to continue it (or Abort to drop it).
-			p.r, p.id, p.addrOf = r, id, addrOf
-			p.opt = opt
-			p.opt.Name = curName
-
-			return OutcomeMenu, r.alt.Load(), p, nil
+			return OutcomeInputEnded, r.alt.Load(), serr
 		}
 
 		if next == nil {
@@ -342,12 +270,14 @@ func runRelay(
 			// app.Run reads the outcome to decide whether to re-open the menu over the
 			// session, fall back to the top-level menu, or leave tm. leftAlt lets it
 			// preserve scrollback when the session was not on the alt screen.
-			return oc, r.alt.Load(), nil, nil
+			return oc, r.alt.Load(), nil
 		}
 
 		announceSwitch(out, next)
 
-		id, opt.Hist, opt.Lines, curName = next.ID, next.Hist, next.Lines, next.Name
+		// The target's window is redrawn: switching moves the terminal to a session
+		// whose screen is not the one currently up.
+		id, opt.Replay, curName = next.ID, true, next.Name
 	}
 }
 
@@ -379,10 +309,6 @@ func rawTerminal(inFd int) (func(out io.Writer, outcome Outcome, curName string,
 			_, _ = out.Write(ExitedSessionNotice(curName))
 		}
 
-		if outcome == OutcomeInterrupted && curName != "" {
-			_, _ = out.Write(CanceledReplayNotice(curName))
-		}
-
 		_ = term.Restore(inFd, old)
 	}, nil
 }
@@ -398,7 +324,7 @@ func rawTerminal(inFd int) (func(out io.Writer, outcome Outcome, curName string,
 // column with a visible cursor and clean modes, instead of inheriting the
 // previous session's leftover modes or mid-line cursor position (which leaves a
 // stray zsh "%" on screen). The switch is then noted before the target's
-// history replays over it — skipped when the target carries no name (e.g. an
+// window replays over it — skipped when the target carries no name (e.g. an
 // older sender), so the notice never renders an empty name.
 func announceSwitch(out io.Writer, next *proto.SwitchTarget) {
 	_, _ = out.Write(SwitchReset)
@@ -408,106 +334,31 @@ func announceSwitch(out io.Writer, next *proto.SwitchTarget) {
 	}
 }
 
-// Paused is a session attachment suspended mid-history-replay so the menu could
-// open promptly. The connection stays up but the relay reads no more frames, so
-// the daemon's replay stalls on socket backpressure — no further history is
-// loaded or rendered until Resume, or ever if the caller Aborts instead (the
-// daemon aborts the rest of the replay when the connection closes).
-type Paused struct {
-	r      *relay
-	nc     net.Conn
-	c      *proto.Conn
-	opt    Options
-	id     string
-	addrOf func(string) string
-}
-
-// Resume reopens the terminal and continues the paused attachment: the replay
-// picks up exactly where it stopped, and the relay then behaves as if never
-// interrupted (the menu key, switching, exiting all work as usual).
-func (p *Paused) Resume() (Outcome, bool, *Paused, error) {
-	in, closeIn := openInput()
-	defer closeIn()
-
-	rd, cancel := cancelInput(in)
-	defer cancel()
-
-	return runRelay(p.opt, rd, os.Stdout, int(in.Fd()), true, p.addrOf, p.id, p)
-}
-
-// Abort abandons the paused attachment instead of resuming it: closing the
-// connection makes the daemon's next replay write fail, so it drops the relay
-// and never loads the rest of the history. The session keeps running.
-func (p *Paused) Abort() { _ = p.nc.Close() }
-
 // session runs one attachment: it dials addr, attaches, and proxies output until
-// input ends (the menu key, Ctrl-C mid-replay, or the local input closing), the
-// session exits, or the session asks the relay to switch. A non-nil cur skips the
-// dial and continues that paused attachment instead. It returns a non-nil
-// SwitchTarget only for a switch and a non-nil Paused only for the menu key
-// mid-replay (the Outcome is OutcomeMenu then, with the attachment left suspended
-// for Resume or Abort); otherwise the Outcome says why it stopped.
+// input ends (the menu key or the local input closing), the session exits, or the
+// session asks the relay to switch. It returns a non-nil SwitchTarget only for a
+// switch; otherwise the Outcome says why it stopped.
 func (r *relay) session(
-	addr string, opt Options, out io.Writer, ended <-chan struct{}, cur *Paused,
-) (*proto.SwitchTarget, Outcome, *Paused, error) {
-	var (
-		nc  net.Conn
-		c   *proto.Conn
-		err error
-	)
-
-	if cur != nil {
-		nc, c = cur.nc, cur.c
-	} else if nc, c, err = r.dialSession(addr, opt); err != nil {
-		return nil, OutcomeInputEnded, nil, err
+	addr string, opt Options, out io.Writer, ended <-chan struct{},
+) (*proto.SwitchTarget, Outcome, error) {
+	nc, c, err := r.dialSession(addr, opt)
+	if err != nil {
+		return nil, OutcomeInputEnded, err
 	}
 
-	// The connection is closed on every way out except a pause, which hands it —
-	// still attached, replay suspended — to the caller inside a Paused.
-	closeConn := true
-	defer func() {
-		if closeConn {
-			_ = nc.Close()
-		}
-	}()
+	defer func() { _ = nc.Close() }()
 
 	r.setConn(c)
 
 	stopResize := watchResize(c)
 	defer stopResize()
 
-	pump := make(chan pumpResult, 1)
-	go func() { pump <- r.pumpOutput(c, out) }()
+	target := make(chan *proto.SwitchTarget, 1)
+
+	go func() { target <- r.pumpOutput(c, out) }()
 
 	select {
 	case <-ended:
-		// Ctrl-C mid-replay aborts the loading: park the pump so no leftover
-		// history races onto the screen after the terminal reset, then drop the
-		// attachment — the deferred close makes the daemon's next replay write
-		// fail, so it never loads the rest of the history (see Paused.Abort) —
-		// while the session keeps running. The caller falls back to the top-level
-		// menu.
-		if r.interrupt.Load() {
-			r.park(nc, pump)
-
-			return nil, OutcomeInterrupted, nil, nil
-		}
-
-		// The menu key mid-replay pauses instead of detaching: park the pump so
-		// the menu never races leftover history onto the screen. The daemon,
-		// unread, stalls mid-replay on socket backpressure.
-		if r.menu.Load() && r.replaying.Load() {
-			if res := r.park(nc, pump); res.paused {
-				_ = nc.SetReadDeadline(time.Time{}) // rearm reads for Resume
-
-				closeConn = false
-
-				return nil, OutcomeMenu, &Paused{nc: nc, c: c}, nil
-			}
-			// The pump stopped for another reason (exit, close, switch) just as the
-			// pause landed: nothing to suspend, fall through to the plain detach.
-		}
-
 		// Input ended: either the user pressed the menu key (r.menu set) or the
 		// local input closed. Either way tell the daemon to drop us — the session
 		// keeps running — and stop this attachment. The Outcome tells the caller
@@ -515,39 +366,26 @@ func (r *relay) session(
 		_ = c.Write(proto.MsgDetach, nil)
 
 		if r.menu.Load() {
-			return nil, OutcomeMenu, nil, nil
+			return nil, OutcomeMenu, nil
 		}
 
-		return nil, OutcomeInputEnded, nil, nil
-	case res := <-pump:
-		// target set: switch to another session (the Outcome is unused by the
+		return nil, OutcomeInputEnded, nil
+	case t := <-target:
+		// A target means switch to another session (the Outcome is unused by the
 		// caller). Otherwise the session's shell exited or its daemon dropped the
 		// relay — the session is gone, so app.Run falls back to the top-level menu.
-		if res.target != nil {
-			return res.target, OutcomeInputEnded, nil, nil
+		if t != nil {
+			return t, OutcomeInputEnded, nil
 		}
 
-		return nil, OutcomeSessionExited, nil, nil
+		return nil, OutcomeSessionExited, nil
 	}
 }
 
-// park asks pumpOutput to stop at its next check — kicking a Read-blocked pump
-// with an immediate read deadline — and waits for it, so nothing more is
-// written to the terminal after it returns.
-func (r *relay) park(nc net.Conn, pump <-chan pumpResult) pumpResult {
-	r.pauseReq.Store(true)
-
-	_ = nc.SetReadDeadline(time.Now())
-
-	return <-pump
-}
-
 // dialSession dials addr and sends the attach request, returning the framed
-// connection. Used only for fresh attachments — a resume reuses the paused one —
-// so it also resets the per-attachment relay state: the alternate-screen
-// tracking starts afresh from this attachment's own output (the replay
-// re-establishes it if the session is mid-full-screen-app), and the replay
-// phase is on until the daemon's MsgReplayDone.
+// connection. It also resets the alternate-screen tracking, so each attachment
+// decides it from its own output (the replayed window re-establishes it if the
+// session is mid-full-screen-app).
 func (r *relay) dialSession(addr string, opt Options) (net.Conn, *proto.Conn, error) {
 	nc, err := proto.Dial(addr)
 	if err != nil {
@@ -558,7 +396,7 @@ func (r *relay) dialSession(addr string, opt Options) (net.Conn, *proto.Conn, er
 
 	cols, rows := terminalSize()
 
-	att := proto.Attach{Hist: opt.Hist, Lines: opt.Lines, Cols: uint16(cols), Rows: uint16(rows)}
+	att := proto.Attach{Replay: opt.Replay, Cols: uint16(cols), Rows: uint16(rows)}
 	if aerr := c.Write(proto.MsgAttach, att.Encode()); aerr != nil {
 		_ = nc.Close()
 
@@ -566,95 +404,36 @@ func (r *relay) dialSession(addr string, opt Options) (net.Conn, *proto.Conn, er
 	}
 
 	r.resetAlt()
-	r.replaying.Store(true)
 
 	return nc, c, nil
 }
 
-// pumpResult is why pumpOutput stopped: a switch request (target set), a pause
-// mid-replay (paused), or the connection closing / the session exiting (neither).
-type pumpResult struct {
-	target *proto.SwitchTarget
-	paused bool
-}
-
 // pumpOutput forwards daemon output to out until the connection closes, the
-// session exits, the daemon asks the relay to switch, or a pause is requested
-// (the menu key mid-replay; see session). While forwarding it tracks the
-// alternate-screen state so leaving the session knows whether sending
-// altScreenExit is needed. A resumed pump first flushes the tail the paused one
-// left in r.pending, so the byte stream continues exactly where it stopped.
-func (r *relay) pumpOutput(c *proto.Conn, out io.Writer) pumpResult {
-	if !r.forward(out, nil) {
-		return pumpResult{paused: true}
-	}
-
+// session exits, or the daemon asks the relay to switch — which it reports by
+// returning the target (nil otherwise). While forwarding it tracks the
+// alternate-screen state, so leaving the session knows whether sending
+// altScreenExit is needed.
+func (r *relay) pumpOutput(c *proto.Conn, out io.Writer) *proto.SwitchTarget {
 	for {
 		mt, payload, err := c.Read()
 		if err != nil {
-			// session kicks a Read-blocked pump with an immediate read deadline so a
-			// pause takes effect even when no frame is arriving; any other error means
-			// the connection closed or the session exited.
-			if r.pauseReq.Load() && errors.Is(err, os.ErrDeadlineExceeded) {
-				return pumpResult{paused: true}
-			}
-
-			return pumpResult{}
+			return nil // the connection closed or the session exited
 		}
 
 		switch mt {
 		case proto.MsgOutput:
-			if !r.forward(out, payload) {
-				return pumpResult{paused: true}
-			}
-		case proto.MsgReplayDone:
-			// History ends here; everything after is live output. The menu key now
-			// detaches (today's behavior) instead of pausing.
-			r.replaying.Store(false)
+			_, _ = out.Write(payload)
+			r.trackAlt(payload)
 		case proto.MsgSwitchTo:
 			if t, derr := proto.DecodeSwitchTarget(payload); derr == nil {
-				return pumpResult{target: &t}
+				return &t
 			}
 
-			return pumpResult{}
+			return nil
 		case proto.MsgExit:
-			return pumpResult{}
+			return nil
 		}
 	}
-}
-
-// forwardChunk is how many bytes forward writes to the terminal between pause
-// checks. Terminal rendering is the slow side of the relay — a full 1 MiB
-// history frame can take on the order of a second to draw — so slicing the
-// writes keeps the menu key's pause latency imperceptible during a replay.
-const forwardChunk = 16 * 1024
-
-// forward writes payload to the terminal in forwardChunk slices — flushing any
-// r.pending tail a paused pump left behind first — checking between slices
-// whether a pause was requested. It returns false when it parked, leaving the
-// unwritten remainder in r.pending for the resumed pump to pick up.
-func (r *relay) forward(out io.Writer, payload []byte) bool {
-	data := payload
-
-	if len(r.pending) > 0 {
-		r.pending = append(r.pending, payload...)
-		data, r.pending = r.pending, nil
-	}
-
-	for len(data) > 0 {
-		if r.pauseReq.Load() {
-			r.pending = data
-
-			return false
-		}
-
-		n := min(forwardChunk, len(data))
-		_, _ = out.Write(data[:n])
-		r.trackAlt(data[:n])
-		data = data[n:]
-	}
-
-	return true
 }
 
 // altScreenToggles maps each alternate-screen enter/exit control sequence to the
@@ -711,9 +490,9 @@ func (r *relay) resetAlt() {
 
 // inputLoop reads local input for the relay's whole lifetime and forwards it to
 // the current session connection, which swaps as the relay switches sessions. On
-// a stop key (see stopIndex) it forwards any bytes before the key, flags which
-// key it was, signals end, and stops; it also stops (signalling end, with no
-// flag) when input closes. Running it once — rather than per session — keeps a
+// the menu key it forwards any bytes before the key, flags it, signals end, and
+// stops; it also stops (signalling end, with no flag) when input closes. Running
+// it once — rather than per session — keeps a
 // single reader on the terminal so switching never leaves a second reader
 // stealing keystrokes. It waits for the first connection before reading, so
 // early keystrokes aren't dropped before the relay has attached.
@@ -743,12 +522,12 @@ func (r *relay) inputLoop(in io.Reader, ended <-chan struct{}, onEnd func()) {
 }
 
 // forwardInput handles one chunk of local input: it forwards it to the current
-// session connection, stopping at a stop key (see stopIndex) — the bytes before
-// the key are still forwarded, and the flag for the key is set before the
-// caller signals end, so the ended-channel reader sees it. It reports whether
-// the input loop should stop.
+// session connection, stopping at the menu key — the bytes before the key are
+// still forwarded, and the menu flag is set before the caller signals end, so
+// the ended-channel reader sees it. It reports whether the input loop should
+// stop.
 func (r *relay) forwardInput(data []byte) (stop bool) {
-	i, interrupt := r.stopIndex(data)
+	i := bytes.IndexByte(data, r.menuKey)
 	if i < 0 {
 		r.sendInput(data)
 
@@ -759,11 +538,7 @@ func (r *relay) forwardInput(data []byte) (stop bool) {
 		r.sendInput(data[:i])
 	}
 
-	if interrupt {
-		r.interrupt.Store(true)
-	} else {
-		r.menu.Store(true)
-	}
+	r.menu.Store(true)
 
 	return true
 }
@@ -774,25 +549,6 @@ func (r *relay) sendInput(data []byte) {
 	if c := r.curConn(); c != nil {
 		_ = c.Write(proto.MsgInput, data)
 	}
-}
-
-// stopIndex finds the first byte of data that ends the input loop: the menu key
-// always does; Ctrl-C does only while a history replay is streaming, where it
-// aborts the loading instead of reaching the session (interrupt reports that
-// case). Live, Ctrl-C is ordinary input — the shell's SIGINT — and is forwarded
-// like any other key. It returns -1 when nothing in data stops the loop.
-func (r *relay) stopIndex(data []byte) (i int, interrupt bool) {
-	i = bytes.IndexByte(data, r.menuKey)
-
-	if !r.replaying.Load() {
-		return i, false
-	}
-
-	if ci := bytes.IndexByte(data, InterruptKey); ci >= 0 && (i < 0 || ci < i) {
-		return ci, true
-	}
-
-	return i, false
 }
 
 func terminalSize() (int, int) {

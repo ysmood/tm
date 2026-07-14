@@ -67,13 +67,12 @@ tm then prints `[tm killed session <name>]` above the menu, so the change stays 
 The command is `[clear history]`. You just type words like `clear`, `ch`, `[c`, etc. and hit enter.
 
 Pick the session whose history to wipe — including the one you are currently inside, marked
-`current`. Both sides of the scrollback are erased: the in-memory buffer the session's background
-process keeps for "one page"/"N lines" replays, and the on-disk log file behind "all history".
-The session keeps running; only its recorded past is gone, so nothing of it can be replayed on a
-later attach.
+`current`. The session's log file is truncated, and that log is the only place its history lives:
+nothing is buffered in memory. The session keeps running; only its recorded past is gone, so
+nothing of it can be replayed on a later attach.
 
 This is handy when a secret — a password, a token — was echoed to the terminal: clearing the
-history keeps it from leaking through the session's log file or a later history replay.
+history keeps it from leaking through the session's log file or a later replay.
 
 Re-attaching before the session has produced anything new replays a dim
 `[tm history cleared here - might need to press enter for a prompt]` line instead of a blank
@@ -87,7 +86,9 @@ your scrollback.
 
 Each session will be listed with its name, just type in the name of the session you want to attach to and hit enter. You will be attached to that session.
 
-When you attach to a session, you will be prompted to choose how much log history you want to see, such as all history, one page, or a specific number of lines.
+Attaching redraws the last window of the session's output — one screenful, read straight from its
+log file — so you land on the screen you left, however long the session has been running. The rest
+of the history stays in the log file, where `tm` never has to stream it to your terminal.
 
 If you are already in a session, it will switch to the new session instead of nesting sessions.
 
@@ -97,12 +98,6 @@ While you are inside a session, press `Ctrl-\` to pop up the tm menu without
 leaving the session. From there you can switch to another session or start a new
 one, and pressing `esc` (or `Ctrl-\` again) drops you straight back into the
 session you came from, right where you left off.
-
-`Ctrl-\` also works while a long history replay (say, "All history" on a busy
-session) is still streaming: the replay pauses on the spot and the menu opens
-immediately. Press `esc` to resume it right where it stopped; pick anything else
-— another session, `[detach session]`, `[exit]` — and the rest of the log is
-never loaded.
 
 ### Exit a session
 

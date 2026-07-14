@@ -43,20 +43,18 @@ func TestPickerTypeToFilter(t *testing.T) {
 	g.Has(typeStr(m, "zzzz").View().Content, "No matches")
 }
 
-// The scrollback chooser is the same picker, so it filters by typing too.
-func TestPickerScrollbackFilters(t *testing.T) {
+// The kill chooser is the same picker, so it filters by typing too.
+func TestPickerKillChooserFilters(t *testing.T) {
 	g := got.T(t)
 	m := sized(g, t)
 
-	m = typeStr(m, "api")
-	m = send(m, keyEnterMsg) // select the session -> scrollback chooser
-	g.Eq(m.pickFor, pickScrollback)
-	g.Has(m.View().Content, "All history")
+	m = typeStr(m, "kill")
+	m = send(m, keyEnterMsg) // [kill session] -> the session chooser
+	g.Eq(m.pickFor, pickKillSession)
+	g.Has(m.View().Content, "api")
 
-	m = typeStr(m, "1000")
-	v := m.View().Content
-	g.Has(v, "Last 1000 lines")
-	g.True(!strings.Contains(v, "All history"))
+	m = typeStr(m, "zzzz")
+	g.True(!strings.Contains(m.View().Content, "api"))
 }
 
 // ctrl+n / ctrl+p move the cursor like the arrow and ctrl+j / ctrl+k keys.

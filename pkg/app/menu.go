@@ -48,7 +48,7 @@ func (c *controller) CurrentSession() (id, name string) {
 // instead of nesting a new relay. It dials the current session's daemon, sends a
 // switch request, and waits for the daemon to forward it (signalled by the daemon
 // closing the connection). It is only meaningful when CurrentSession() != "".
-func (c *controller) Switch(id string, hist proto.HistMode, lines uint32) error {
+func (c *controller) Switch(id string) error {
 	cur := os.Getenv(config.EnvSession)
 	if cur == "" {
 		return errors.New("not running inside a session")
@@ -63,7 +63,7 @@ func (c *controller) Switch(id string, hist proto.HistMode, lines uint32) error 
 
 	conn := proto.NewConn(nc)
 
-	tgt := proto.SwitchTarget{ID: id, Name: sessionName(c.st, id), Hist: hist, Lines: lines}
+	tgt := proto.SwitchTarget{ID: id, Name: sessionName(c.st, id)}
 	if err := conn.Write(proto.MsgSwitch, tgt.Encode()); err != nil {
 		return err
 	}
@@ -188,12 +188,12 @@ func (c *controller) killUnreachable(id string) error {
 	return c.st.DeleteSession(id)
 }
 
-// ClearHistory wipes a session's recorded history by asking its daemon to empty
-// the in-memory scrollback and truncate the log file, so nothing of the
-// session's past (say, a secret echoed to the terminal) survives on disk or can
-// be replayed on a later attach. The session keeps running. It blocks (bounded
-// by killTimeout) until the daemon closes the connection — the wipe is done. A
-// session whose daemon can't be asked at all falls back to clearUnreachable.
+// ClearHistory wipes a session's recorded history by asking its daemon to
+// truncate the log file it records to, so nothing of the session's past (say, a
+// secret echoed to the terminal) survives on disk or can be replayed on a later
+// attach. The session keeps running. It blocks (bounded by killTimeout) until the
+// daemon closes the connection — the wipe is done. A session whose daemon can't
+// be asked at all falls back to clearUnreachable.
 func (c *controller) ClearHistory(id string) error {
 	nc, err := proto.Dial(proto.SockAddr(c.st.Paths(), id))
 	if err != nil {
@@ -219,9 +219,9 @@ func (c *controller) ClearHistory(id string) error {
 // clearUnreachable handles clearing a session whose daemon can't be asked (the
 // dial or the clear request failed). A dead session's history is just its
 // leftover log file, so that is truncated directly — the record itself is left
-// for Reap. A live daemon that merely lost its socket still holds history in
-// its ring, which truncating the file alone would not wipe, so that is reported
-// rather than half-cleared.
+// for Reap. A live daemon that merely lost its socket keeps appending to that
+// file, so truncating it behind the daemon's back would leave the session
+// half-cleared; that is reported instead.
 func (c *controller) clearUnreachable(id string) error {
 	sess, err := c.st.GetSession(id)
 	if err != nil {
@@ -298,28 +298,30 @@ func Run() error {
 // pickTarget maps a menu result to the session the relay should (re)attach, or
 // reports leave=true (return to the launching shell) or toMenu=true (drop to the
 // top-level menu). curID is the session the menu was framed as running inside
-// ("" at the top level).
+// ("" at the top level). replay says whether the attach should redraw the target's
+// last window of output.
 //
 // A picked session (attach or switch — in the relay-menu both just resolve to a
-// target on this terminal) yields that target. esc/Ctrl-C (ActionNone) leaves tm
-// at the top level but resumes the current session when reopened from one,
-// replaying nothing (HistNone) so it doesn't reprint a screen of history over the
-// session's still-visible output. [detach session] from within a session returns
-// to the top-level menu (toMenu) with every session still running, first
-// resetting the terminal so the menu redraws clean; at the top level, where there
-// is no session to detach from, it leaves tm like esc.
+// target on this terminal) yields that target, with its window replayed on
+// arrival. esc/Ctrl-C (ActionNone) leaves tm at the top level but resumes the
+// current session when reopened from one, replaying nothing: that session's screen
+// never went away, so redrawing it would print a second copy over it.
+// [detach session] from within a session returns to the top-level menu (toMenu)
+// with every session still running, first resetting the terminal so the menu
+// redraws clean; at the top level, where there is no session to detach from, it
+// leaves tm like esc.
 func pickTarget(
 	res tui.Result, curID string, curAlt bool,
-) (targetID string, hist proto.HistMode, lines uint32, leave, toMenu bool) {
+) (targetID string, replay, leave, toMenu bool) {
 	switch res.Action {
 	case tui.ActionAttach, tui.ActionSwitch:
-		return res.ID, res.Hist, res.Lines, false, false
+		return res.ID, true, false, false
 	case tui.ActionNone:
 		if curID == "" {
-			return "", 0, 0, true, false
+			return "", false, true, false
 		}
 
-		return curID, proto.HistNone, 0, false, false
+		return curID, false, false, false
 	case tui.ActionDetach:
 		if curID != "" {
 			// Detaching from a session returns to the top-level menu (the session
@@ -329,10 +331,10 @@ func pickTarget(
 			// menu redraws on a clean screen, the way a session switch does.
 			_, _ = os.Stdout.Write(attach.RestoreFor(curAlt))
 
-			return "", 0, 0, false, true
+			return "", false, false, true
 		}
 
-		return "", 0, 0, true, false
+		return "", false, true, false
 	case tui.ActionExit:
 		// [exit] (Ctrl-D): leave tm from anywhere. When leaving from within a
 		// session, reset the terminal for the launching shell first — the alt-screen
@@ -342,10 +344,10 @@ func pickTarget(
 			_, _ = os.Stdout.Write(attach.RestoreFor(curAlt))
 		}
 
-		return "", 0, 0, true, false
+		return "", false, true, false
 	}
 
-	return "", 0, 0, true, false
+	return "", false, true, false
 }
 
 func runMenu(st *store.Store, ctrl *controller) error {
@@ -354,10 +356,6 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		curID   string // session the relay is (or just was) on; "" at the top level
 		curName string
 		curAlt  bool // the relay left that session on the alternate screen
-		// paused is the attachment suspended mid-history-replay when the menu key
-		// opened this menu (nil otherwise): esc resumes it in place, any other
-		// choice aborts it so the rest of the history is never loaded.
-		paused *attach.Paused
 	)
 
 	for {
@@ -383,16 +381,13 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		// pickTarget since it is neither an attach nor a plain way out — the session
 		// (and whatever of it is on this screen) is being ended deliberately.
 		if res.Action == tui.ActionKillCurrent {
-			next := killCurrentSession(ctrl, paused, curID, curName, curAlt)
-			paused = nil
+			next := killCurrentSession(ctrl, curID, curName, curAlt)
 			curID, curName, curAlt, status = next.curID, next.curName, next.curAlt, next.status
 
 			continue
 		}
 
-		targetID, hist, lines, leave, toMenu := pickTarget(res, curID, curAlt)
-
-		paused = settlePaused(paused, targetID, curID, leave, toMenu)
+		targetID, replay, leave, toMenu := pickTarget(res, curID, curAlt)
 
 		if toMenu || leave {
 			noteMenuExit(curName, toMenu)
@@ -409,10 +404,10 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		targetName := sessionName(st, targetID)
 		announceAttach(curID, targetID, targetName)
 
-		outcome, alt, nowPaused, aerr := runOrResume(st, paused, targetID, targetName, hist, lines)
-		paused = nowPaused
+		outcome, alt, aerr := attach.Run(st.Paths(), targetID,
+			attach.Options{Replay: replay, Name: targetName})
 
-		next, done := afterRelay(st, ctrl, targetID, alt, outcome, paused, aerr)
+		next, done := afterRelay(st, ctrl, targetID, alt, outcome, aerr)
 		if done {
 			return nil // local input ended (the terminal went away): leave tm
 		}
@@ -438,35 +433,21 @@ type menuState struct {
 // forever — and note it on the reopened top-level menu. OutcomeMenu (Ctrl-\)
 // reopens the menu framed as in-session, so esc resumes and a pick switches,
 // remembering whether the session left the terminal on the alt screen so a
-// following [detach session] resets it correctly; a non-nil paused means the
-// key landed mid-history-replay, which the status says (esc then resumes the
-// replay). OutcomeSessionExited falls back to the top-level menu — the session
-// is gone and its relay already reset the terminal — so the user can pick or
-// start another session instead of leaving tm. OutcomeInterrupted (Ctrl-C
-// mid-history-replay) likewise falls back to the top-level menu, but the
-// session is still running: the user aborted loading its history, so they can
-// re-enter it (perhaps with less history) or pick another one.
+// following [detach session] resets it correctly. OutcomeSessionExited falls
+// back to the top-level menu — the session is gone and its relay already reset
+// the terminal — so the user can pick or start another session instead of
+// leaving tm.
 func afterRelay(
 	st *store.Store, ctrl *controller, targetID string, alt bool,
-	outcome attach.Outcome, paused *attach.Paused, aerr error,
+	outcome attach.Outcome, aerr error,
 ) (menuState, bool) {
 	switch {
 	case aerr != nil:
 		return menuState{status: afterAttachError(ctrl, aerr)}, false
 	case outcome == attach.OutcomeMenu:
-		next := menuState{curID: targetID, curName: sessionName(st, targetID), curAlt: alt}
-		if paused != nil {
-			next.status = "history replay paused"
-		}
-
-		return next, false
+		return menuState{curID: targetID, curName: sessionName(st, targetID), curAlt: alt}, false
 	case outcome == attach.OutcomeSessionExited:
 		return menuState{}, false
-	case outcome == attach.OutcomeInterrupted:
-		// Ctrl-C mid-history-replay: the relay aborted the replay (the session
-		// keeps running) and already reset the terminal, so fall back to the
-		// top-level menu like a session exit, noting why.
-		return menuState{status: "history replay canceled"}, false
 	default:
 		return menuState{}, true
 	}
@@ -491,20 +472,12 @@ func noteMenuExit(curName string, toMenu bool) {
 }
 
 // killCurrentSession ends the session the menu was framed inside and returns
-// the menu's next framing. Any replay paused on it is aborted first — the rest
-// of the history will never be shown, and holding the attachment would wedge
-// the daemon's teardown. On success the terminal is reset the way the
+// the menu's next framing. On success the terminal is reset the way the
 // session-exited path does (the relay left the session's screen up for the
 // menu) and the kill is noted, so the top-level menu reopens on a clean screen
 // with the notice in the scrollback above it. On failure the session may still
 // be running, so the menu stays framed inside it with the reason in its header.
-func killCurrentSession(
-	ctrl *controller, paused *attach.Paused, curID, curName string, curAlt bool,
-) menuState {
-	if paused != nil {
-		paused.Abort()
-	}
-
+func killCurrentSession(ctrl *controller, curID, curName string, curAlt bool) menuState {
 	if err := ctrl.KillSession(curID); err != nil {
 		return menuState{
 			curID: curID, curName: curName, curAlt: curAlt,
@@ -518,44 +491,11 @@ func killCurrentSession(
 	return menuState{}
 }
 
-// settlePaused decides whether the menu's outcome resumes a replay the menu key
-// paused (esc back into the same session), returning the attachment when it
-// does and aborting it otherwise: any other way out abandons the replay, so the
-// daemon stops streaming history that would never be shown. A non-nil result
-// therefore means "resume this" (see runOrResume).
-func settlePaused(paused *attach.Paused, targetID, curID string, leave, toMenu bool) *attach.Paused {
-	if paused == nil {
-		return nil
-	}
-
-	if !leave && !toMenu && targetID == curID {
-		return paused
-	}
-
-	paused.Abort()
-
-	return nil
-}
-
-// runOrResume moves the relay onto targetID: continuing the paused replay on
-// its suspended attachment — right where it stopped — when settlePaused kept
-// one, and dialing a fresh relay otherwise.
-func runOrResume(
-	st *store.Store, paused *attach.Paused,
-	targetID, targetName string, hist proto.HistMode, lines uint32,
-) (attach.Outcome, bool, *attach.Paused, error) {
-	if paused != nil {
-		return paused.Resume()
-	}
-
-	return attach.Run(st.Paths(), targetID, attach.Options{Hist: hist, Lines: lines, Name: targetName})
-}
-
 // announceAttach writes the terminal reset and status notice for moving the relay
 // onto targetName. Switching to a different session (curID set and != target): the
 // relay left this session's screen up so the menu could open inline over it, so
 // reset the terminal (leave the alternate screen, mouse modes, scroll region, …)
-// and return to column 0 before the target's history replays, so the replay lands
+// and return to column 0 before the target's window replays, so the replay lands
 // from a known column. Entering a session from the top-level menu (curID == "") is
 // a fresh attach with nothing to undo. Resuming the same session (curID ==
 // targetID) keeps the screen as-is — the point of the inline menu — so it says
@@ -670,7 +610,7 @@ func runInSession(ctrl *controller) error {
 	if res.Action == tui.ActionSwitch {
 		// Hand the relay to the target. Non-fatal — if the current session's daemon
 		// can't be reached the user just stays put.
-		if serr := ctrl.Switch(res.ID, res.Hist, res.Lines); serr != nil {
+		if serr := ctrl.Switch(res.ID); serr != nil {
 			fmt.Fprintln(os.Stderr, "tm: switch session:", serr)
 		}
 	}
@@ -757,18 +697,14 @@ func reapNoun(n int) string {
 
 // RunAttach is the entrypoint for the hidden `tm __attach` subcommand. It runs a
 // bare relay with no menu loop, so the menu key just ends it (like the old
-// detach) — a replay paused by the key is aborted, since there is no menu to
-// resume from; the full menu-on-Ctrl-\ flow lives in Run/runMenu.
-func RunAttach(id string, hist proto.HistMode, lines uint32) error {
+// detach); the full menu-on-Ctrl-\ flow lives in Run/runMenu.
+func RunAttach(id string) error {
 	p, err := config.New()
 	if err != nil {
 		return err
 	}
 
-	_, _, paused, err := attach.Run(p, id, attach.Options{Hist: hist, Lines: lines})
-	if paused != nil {
-		paused.Abort()
-	}
+	_, _, err = attach.Run(p, id, attach.Options{Replay: true})
 
 	return err
 }

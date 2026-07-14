@@ -69,12 +69,8 @@ func TestRenameFromSessionKeepsCursor(t *testing.T) {
 	buf := &safeBuilder{}
 	go func() { _, _ = io.Copy(buf, pt) }()
 
-	// Enter the session (cursor starts on it) with all history.
+	// Enter the session (the cursor starts on it).
 	g.True(waitForText(buf, "aaa", 10*time.Second))
-
-	_, err = pt.Write([]byte("\r"))
-	g.E(err)
-	time.Sleep(400 * time.Millisecond)
 
 	// Mark before leaving the menu for the session: the menu's own bytes contain
 	// a bare "$" (DECRQM terminal queries like CSI ?2026$p), so the prompt wait
@@ -82,7 +78,7 @@ func TestRenameFromSessionKeepsCursor(t *testing.T) {
 	// which the queries lack.
 	promptMark := len(buf.String())
 
-	_, err = pt.Write([]byte("\r")) // "All history"
+	_, err = pt.Write([]byte("\r")) // pick the session -> attach
 	g.E(err)
 
 	// Wait for the shell's prompt — the cursor-column assertions below compare

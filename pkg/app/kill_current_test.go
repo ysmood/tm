@@ -60,11 +60,7 @@ func spawnAndEnter(g got.G, t *testing.T) (gopty.Pty, *safeBuilder, *store.Store
 
 	g.True(waitForText(buf, "aaa", 10*time.Second))
 
-	_, err = pt.Write([]byte("\r"))
-	g.E(err)
-	time.Sleep(400 * time.Millisecond)
-
-	_, err = pt.Write([]byte("\r")) // "All history"
+	_, err = pt.Write([]byte("\r")) // pick the session -> attach
 	g.E(err)
 	g.True(waitForText(buf, "[tm entered session", 10*time.Second))
 

@@ -64,7 +64,7 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 		return nil, err
 	}
 
-	sb, err := NewScrollback(DefaultRingBytes, p.LogFile(sess.ID))
+	sb, err := NewScrollback(p.LogFile(sess.ID))
 	if err != nil {
 		return nil, err
 	}
@@ -199,10 +199,10 @@ func (d *Daemon) handleConn(nc net.Conn) {
 		return
 	}
 
-	// A MsgClear connection wipes the session's recorded history — the scrollback
-	// ring and the log file — without attaching, so a later attach replays none of
-	// it. The session and any attached client run on undisturbed; the deferred
-	// close of this connection tells the requester the wipe is done.
+	// A MsgClear connection wipes the session's recorded history — its log file —
+	// without attaching, so a later attach replays none of it. The session and any
+	// attached client run on undisturbed; the deferred close of this connection
+	// tells the requester the wipe is done.
 	if mt == proto.MsgClear {
 		_ = d.sb.Clear()
 
@@ -248,8 +248,9 @@ func (d *Daemon) forwardSwitch(payload []byte) {
 }
 
 // register makes c the active client (displacing any previous one) and replays
-// the requested history under the lock, so live output can't interleave ahead
-// of it. It returns false if the client went away during the replay.
+// the last window of recorded output under the lock, so live output can't
+// interleave ahead of it. It returns false if the client went away during the
+// replay.
 func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 	rows := int(att.Rows)
 
@@ -268,14 +269,17 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 
 	d.client = c
 
-	// Strip query sequences so replaying history can't make the attaching
-	// terminal answer probes and inject the replies into the session.
-	hist := sanitizeReplay(d.sb.History(att.Hist, int(att.Lines), rows))
+	if !att.Replay {
+		return true // resuming a session whose screen is still up: nothing to redraw
+	}
 
-	// History was asked for, but the wipe left nothing to show: explain the
-	// blank screen instead of replaying it. A HistNone attach (resuming a paused
-	// session, whose screen still has content) stays silent.
-	if len(hist) == 0 && att.Hist != proto.HistNone && d.cleared {
+	// Strip query sequences so replaying the window can't make the attaching
+	// terminal answer probes and inject the replies into the session.
+	hist := sanitizeReplay(d.sb.History(rows))
+
+	// A replay was asked for, but the wipe left nothing to show: explain the blank
+	// screen instead of replaying it.
+	if len(hist) == 0 && d.cleared {
 		hist = clearedHint
 	}
 
@@ -288,30 +292,20 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 	return true
 }
 
-// replay sends the soft reset followed by the recorded history to c, split into
-// frames no larger than proto.MaxPayload. "All history" can be many megabytes,
-// while a single frame is capped, so the history must be chunked — otherwise the
-// oversized frame is rejected, the connection drops, and the attach silently
-// bounces back to the menu. It ends with a MsgReplayDone marker — sent even for
-// an empty replay — so the relay knows where history stops and live output
-// begins (the menu key pauses a replay rather than detaching; see attach). It
-// returns false if any write fails, including a replay the relay aborted by
-// closing its connection mid-stream.
+// replay sends the soft reset followed by the recorded window to c. A window is
+// one screen of lines — bounded well under proto.MaxPayload by the tail the
+// scrollback reads (see TailBytes) — so it goes out as a single frame, with no
+// chunking or streaming to interrupt. It returns false if a write fails.
 func replay(c *proto.Conn, hist []byte) bool {
-	if len(hist) > 0 {
-		if err := c.Write(proto.MsgOutput, softReset); err != nil {
-			return false
-		}
-
-		for off := 0; off < len(hist); off += proto.MaxPayload {
-			end := min(off+proto.MaxPayload, len(hist))
-			if err := c.Write(proto.MsgOutput, hist[off:end]); err != nil {
-				return false
-			}
-		}
+	if len(hist) == 0 {
+		return true
 	}
 
-	return c.Write(proto.MsgReplayDone, nil) == nil
+	if err := c.Write(proto.MsgOutput, softReset); err != nil {
+		return false
+	}
+
+	return c.Write(proto.MsgOutput, hist) == nil
 }
 
 // serveInput processes client frames until detach, a read error, or EOF.
