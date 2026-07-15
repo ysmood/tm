@@ -73,6 +73,50 @@ func TestCookVisibleForm(t *testing.T) {
 	check("a b   \n", "a b\n")
 }
 
+// A full-screen app's alternate-screen paint is dropped: nothing between the
+// enter (?1049h and its ?47/?1047 variants) and leave (l) toggles reaches the
+// log, and the main-screen output around it records normally.
+func TestCookDropsAltScreen(t *testing.T) {
+	g := got.T(t)
+
+	check := func(in, want string) {
+		g.Helper()
+		g.Eq(cookAll(in), want)
+	}
+
+	// vim-style: the launching command's line, then a screenful of paint on the
+	// alt screen, then the shell's repainted prompt. Only the main screen lands.
+	check("$ vim\n\x1b[?1049h~\n~\nfile paint\x1b[?1049l$ ", "$ vim\n$ ")
+
+	// The older ?47 and ?1047 toggles are dropped the same way.
+	check("a\x1b[?47hHIDDEN\x1b[?47lb", "ab")
+	check("a\x1b[?1047hHIDDEN\x1b[?1047lb", "ab")
+
+	// Styling inside the alt screen never bleeds into the main-screen log.
+	check("\x1b[?1049h\x1b[31mred\x1b[?1049lplain", "plain")
+
+	// A similar-looking private mode that is not an alt-screen swap is still
+	// dropped as a non-SGR escape, but does not suppress the text around it.
+	check("a\x1b[?25lb\x1b[?25hc", "abc") // cursor hide/show
+}
+
+// Entering and leaving the alt screen split across chunk boundaries is still
+// detected, so a paint straddling the boundary is dropped in full.
+func TestCookAltScreenAcrossChunks(t *testing.T) {
+	g := got.T(t)
+
+	var c cooker
+
+	var b strings.Builder
+
+	b.Write(c.cook([]byte("$ \x1b[?10"))) // enter toggle split mid-sequence
+	b.Write(c.cook([]byte("49hpaint\x1b[?1049")))
+	b.Write(c.cook([]byte("l$ ")))
+	b.Write(c.tail())
+
+	g.Eq(b.String(), "$ $ ")
+}
+
 // The live in-progress line (the tail) keeps a trailing space the cursor rests
 // on — a shell prompt's "$ " must not collapse to "$" on re-attach — while pad
 // spaces a redraw leaves beyond the cursor are still dropped, and a completed

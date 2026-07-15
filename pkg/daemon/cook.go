@@ -52,6 +52,11 @@ var blankCell = cell{n: 1, text: [utf8.UTFMax]byte{' '}}
 // reproducing the screen. That is the deliberate trade for a history *log* of a
 // shell session.
 //
+// A full-screen app (vim, less, htop) switches to the terminal's alternate
+// screen buffer to paint, then restores the main screen on exit — so its output
+// is transient and belongs to no history. While that "second screen" is up the
+// cooker records nothing (see alt); only the main screen reaches the log.
+//
 // Cells own their bytes and the returned line buffer is reused, so cook does not
 // copy or allocate per chunk in steady state: the read buffer is scanned in
 // place. All the fields below outlive a single call and are reused across them.
@@ -62,6 +67,7 @@ type cooker struct {
 	held   []byte // a sequence or rune split across calls, kept for the next chunk
 	joined []byte // scratch to splice held + next chunk when held is non-empty
 	out    []byte // completed lines returned by cook; valid until the next cook call
+	alt    bool   // on the alternate screen buffer: drop output until it is left
 }
 
 // cell is one column of the current line: the character's own bytes (copied in,
@@ -90,20 +96,29 @@ func (c *cooker) cook(p []byte) []byte {
 	for i := 0; i < len(p); {
 		b := p[i]
 
-		switch {
-		case b == esc:
-			n, sgr, complete := scanEscape(p[i:])
-			if !complete {
-				c.hold(p[i:])
-
+		// An escape is always scanned in full, even on the alt screen, so its bytes
+		// are skipped as a unit and the toggle that leaves the alt screen is seen.
+		if b == esc {
+			n, held := c.handleEscape(p[i:])
+			if held {
 				return c.out
 			}
 
-			if sgr {
-				c.setStyle(p[i : i+n])
-			}
-
 			i += n
+
+			continue
+		}
+
+		// On the alternate screen every other byte is dropped: a full-screen app's
+		// paint never reaches the log, and no partial rune need be held since it
+		// would be dropped regardless.
+		if c.alt {
+			i++
+
+			continue
+		}
+
+		switch {
 		case b == '\n':
 			c.flushLine()
 
@@ -138,6 +153,28 @@ func (c *cooker) cook(p []byte) []byte {
 	}
 
 	return c.out
+}
+
+// handleEscape scans the escape sequence at the start of esc and applies it,
+// returning how many bytes it spans. An alt-screen toggle switches recording on
+// or off; an SGR set updates the active style unless the alt screen is up. If
+// the sequence is truncated at the chunk boundary it is held for the next chunk
+// and held is true, telling cook to stop and return what it has.
+func (c *cooker) handleEscape(esc []byte) (n int, held bool) {
+	n, sgr, complete := scanEscape(esc)
+	if !complete {
+		c.hold(esc)
+
+		return 0, true
+	}
+
+	if enter, ok := altToggle(esc[:n]); ok {
+		c.setAlt(enter)
+	} else if sgr && !c.alt {
+		c.setStyle(esc[:n])
+	}
+
+	return n, false
 }
 
 // hold keeps a partial sequence or rune for the next chunk to complete. Past
@@ -273,6 +310,37 @@ func (c *cooker) setStyle(seq []byte) {
 		style = append(style, c.style...)
 		style = append(style, seq...)
 		c.style = style
+	}
+}
+
+// setAlt enters or leaves the alternate screen. The main-screen line and style
+// are left untouched: a terminal preserves the main screen while the alt screen
+// is up and restores it on leave, and cook already suppresses all output in
+// between, so the pre-switch line simply resumes — no alt content can have
+// reached it.
+func (c *cooker) setAlt(enter bool) {
+	c.alt = enter
+}
+
+// altToggle reports whether seq is a DEC private mode set/reset for the
+// alternate screen buffer — "\x1b[?47h/l", "\x1b[?1047h/l", or "\x1b[?1049h/l" —
+// and, if so, whether it enters (final 'h') or leaves (final 'l') it. These are
+// how a full-screen app swaps in its own transient screen, which the log skips.
+func altToggle(seq []byte) (enter, ok bool) {
+	if len(seq) < 5 || seq[2] != '?' {
+		return false, false // not a private-mode CSI ("\x1b[?...")
+	}
+
+	final := seq[len(seq)-1]
+	if final != 'h' && final != 'l' {
+		return false, false
+	}
+
+	switch string(seq[3 : len(seq)-1]) {
+	case "47", "1047", "1049":
+		return final == 'h', true
+	default:
+		return false, false
 	}
 }
 
