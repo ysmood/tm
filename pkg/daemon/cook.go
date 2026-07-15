@@ -8,15 +8,32 @@ import (
 const (
 	esc = 0x1b
 	bel = 0x07
-)
 
-// space is the byte a blank cell holds; also what renderLine trims from a line's
-// end.
-var space = []byte{' '}
+	// maxLineWidth bounds the in-progress line's cells. Output with no newline
+	// (a huge single line, binary data) would otherwise grow the buffer without
+	// limit, since the line is only flushed on a newline. Reaching the cap
+	// soft-wraps the line — flushes it and continues on a fresh one — so memory
+	// stays bounded. It is far wider than any real terminal, so carriage-return
+	// redraws (prompts, progress bars) never reach it and their overwrites are
+	// unaffected.
+	maxLineWidth = 1 << 13 // 8192 columns
+
+	// maxHeldBytes bounds the partial sequence held across chunks. A sequence
+	// with no terminator (an unterminated OSC/DCS in a malformed or binary
+	// stream) would otherwise grow held without limit. Past this — far longer
+	// than any sequence the cooker keeps, all of which are short — the held bytes
+	// are dropped and scanning resyncs on the next chunk.
+	maxHeldBytes = 1 << 16 // 64 KiB
+)
 
 // sgrReset ends the styling emitted for a rendered line, so each recorded line
 // carries its own complete style and colors never bleed between lines in a pager.
 var sgrReset = []byte("\x1b[0m")
+
+// blankCell is a single space with no style, used to pad a line out to a column
+// the cursor jumped past. Copied by value into the cell slice, so the shared
+// value is never mutated.
+var blankCell = cell{n: 1, text: [utf8.UTFMax]byte{' '}}
 
 // cooker turns the raw PTY byte stream into the visible history that gets
 // recorded to the log: printable text, tabs, newlines, and SGR (color and text
@@ -34,33 +51,41 @@ var sgrReset = []byte("\x1b[0m")
 // whole screen) is not reconstructed — such output flattens rather than
 // reproducing the screen. That is the deliberate trade for a history *log* of a
 // shell session.
+//
+// Cells own their bytes and the returned line buffer is reused, so cook does not
+// copy or allocate per chunk in steady state: the read buffer is scanned in
+// place. All the fields below outlive a single call and are reused across them.
 type cooker struct {
-	cells   []cell // the in-progress (not yet newline-terminated) line, by column
-	col     int    // the cursor's column within the line
-	style   []byte // SGR sequence(s) active for newly written cells (nil = default)
-	pending []byte // a sequence split across cook calls, held for the next chunk
+	cells  []cell // the in-progress (not yet newline-terminated) line, by column
+	col    int    // the cursor's column within the line
+	style  []byte // SGR sequence(s) active for new cells (cooker-owned; nil = default)
+	held   []byte // a sequence or rune split across calls, kept for the next chunk
+	joined []byte // scratch to splice held + next chunk when held is non-empty
+	out    []byte // completed lines returned by cook; valid until the next cook call
 }
 
-// cell is one column of the current line: the character's bytes and the SGR
-// style that was active when it was written.
+// cell is one column of the current line: the character's own bytes (copied in,
+// so nothing aliases the read buffer) and the SGR style active when it was
+// written (a cooker-owned, immutable snapshot shared by reference).
 type cell struct {
 	style []byte
-	text  []byte
+	text  [utf8.UTFMax]byte
+	n     uint8
 }
+
+// isSpace reports whether the cell is a lone unstyled-or-styled space, which
+// renderInto trims from a line's end.
+func (c cell) isSpace() bool { return c.n == 1 && c.text[0] == ' ' }
 
 // cook consumes a chunk of raw PTY output and returns the finished lines to
 // append to the log — every line this chunk terminated with a newline, rendered
 // to its visible form. The in-progress line stays buffered in the cooker (see
 // tail), so nothing is written until a newline settles it and a later overwrite
-// can still revise it.
+// can still revise it. The returned slice is owned by the cooker and stays valid
+// only until the next cook or reset call.
 func (c *cooker) cook(p []byte) []byte {
-	// Work on a copy detached from the caller's read buffer (which is reused for
-	// the next read): cells alias these bytes and must outlive this call. A held
-	// partial sequence from last time is prepended so it is scanned as a whole.
-	p = append(c.pending, p...)
-	c.pending = nil
-
-	var out []byte
+	p = c.spliceHeld(p)
+	c.out = c.out[:0]
 
 	for i := 0; i < len(p); {
 		b := p[i]
@@ -69,9 +94,9 @@ func (c *cooker) cook(p []byte) []byte {
 		case b == esc:
 			n, sgr, complete := scanEscape(p[i:])
 			if !complete {
-				c.pending = append([]byte(nil), p[i:]...)
+				c.hold(p[i:])
 
-				return out
+				return c.out
 			}
 
 			if sgr {
@@ -80,10 +105,8 @@ func (c *cooker) cook(p []byte) []byte {
 
 			i += n
 		case b == '\n':
-			out = append(out, c.renderLine()...)
-			out = append(out, '\n')
-			c.cells = c.cells[:0]
-			c.col = 0
+			c.flushLine()
+
 			i++
 		case b == '\r':
 			c.col = 0
@@ -101,9 +124,9 @@ func (c *cooker) cook(p []byte) []byte {
 		case b >= 0x20 && b != 0x7f:
 			r, size := decodeRune(p[i:])
 			if size == 0 {
-				c.pending = append([]byte(nil), p[i:]...) // truncated UTF-8; await the rest
+				c.hold(p[i:]) // truncated UTF-8; await the rest
 
-				return out
+				return c.out
 			}
 
 			c.put(r)
@@ -114,13 +137,52 @@ func (c *cooker) cook(p []byte) []byte {
 		}
 	}
 
-	return out
+	return c.out
 }
 
-// tail returns the in-progress line's visible bytes, so a replay can show the
-// live prompt that has not yet been committed with a newline.
+// hold keeps a partial sequence or rune for the next chunk to complete. Past
+// maxHeldBytes it is instead dropped: nothing the cooker keeps is that long, so
+// this is an unterminated sequence in a malformed stream, and holding it would
+// grow the buffer without bound. Dropping resyncs scanning on the next chunk.
+func (c *cooker) hold(rest []byte) {
+	if len(rest) > maxHeldBytes {
+		c.held = c.held[:0]
+
+		return
+	}
+
+	c.held = append(c.held[:0], rest...)
+}
+
+// flushLine renders the in-progress line, terminates it with a newline, and
+// clears it for the next one. The active style carries over, so a color that
+// spans the break stays in effect.
+func (c *cooker) flushLine() {
+	c.out = append(c.renderInto(c.out), '\n')
+	c.cells = c.cells[:0]
+	c.col = 0
+}
+
+// spliceHeld prepends any bytes held from the previous chunk — a sequence or
+// rune that straddled the boundary — so p scans as a whole. In the common case
+// nothing is held and p is returned untouched (no copy); otherwise the splice
+// reuses two buffers, so it costs no allocation in steady state.
+func (c *cooker) spliceHeld(p []byte) []byte {
+	if len(c.held) == 0 {
+		return p
+	}
+
+	c.joined = append(append(c.joined[:0], c.held...), p...)
+	c.held = c.held[:0]
+
+	return c.joined
+}
+
+// tail returns the in-progress line's visible bytes as a fresh slice, so a
+// replay can show the live prompt that has not yet been committed with a newline
+// without disturbing cook's reused output buffer.
 func (c *cooker) tail() []byte {
-	return c.renderLine()
+	return c.renderInto(nil)
 }
 
 // reset discards all buffered state, so a cleared session starts from a clean
@@ -131,52 +193,61 @@ func (c *cooker) reset() {
 
 // put writes one character's bytes at the cursor column with the active style,
 // padding with blank cells if the cursor sits past the line's end, then advances
-// the cursor.
+// the cursor. The bytes are copied into the cell, so nothing aliases the caller's
+// read buffer.
 func (c *cooker) put(text []byte) {
-	for len(c.cells) < c.col {
-		c.cells = append(c.cells, cell{text: space})
+	if c.col >= maxLineWidth {
+		c.flushLine() // no newline in sight; soft-wrap so the buffer stays bounded
 	}
 
+	for len(c.cells) < c.col {
+		c.cells = append(c.cells, blankCell)
+	}
+
+	cl := cell{style: c.style, n: uint8(len(text))}
+	copy(cl.text[:], text)
+
 	if c.col < len(c.cells) {
-		c.cells[c.col] = cell{style: c.style, text: text}
+		c.cells[c.col] = cl
 	} else {
-		c.cells = append(c.cells, cell{style: c.style, text: text})
+		c.cells = append(c.cells, cl)
 	}
 
 	c.col++
 }
 
-// renderLine renders the current line's cells to their visible bytes: the text,
-// with each cell's style emitted when it changes (reset first, so a run's style
-// never carries over from the previous one), and a closing reset if the line
-// ended styled. Trailing spaces are dropped — a terminal pads a redrawn line out
-// to its width, but a log needs no padding.
-func (c *cooker) renderLine() []byte {
+// renderInto appends the current line's visible bytes to dst and returns it: the
+// text, with each cell's style emitted when it changes (reset first, so a run's
+// style never carries over from the previous one), and a closing reset if the
+// line ended styled. Trailing spaces are dropped — a terminal pads a redrawn line
+// out to its width, but a log needs no padding.
+func (c *cooker) renderInto(dst []byte) []byte {
 	end := len(c.cells)
-	for end > 0 && bytes.Equal(c.cells[end-1].text, space) {
+	for end > 0 && c.cells[end-1].isSpace() {
 		end--
 	}
 
-	var out, cur []byte
+	var cur []byte
 
-	for _, cl := range c.cells[:end] {
+	for i := range end {
+		cl := &c.cells[i]
 		if !bytes.Equal(cl.style, cur) {
 			if len(cur) > 0 {
-				out = append(out, sgrReset...)
+				dst = append(dst, sgrReset...)
 			}
 
-			out = append(out, cl.style...)
+			dst = append(dst, cl.style...)
 			cur = cl.style
 		}
 
-		out = append(out, cl.text...)
+		dst = append(dst, cl.text[:cl.n]...)
 	}
 
 	if len(cur) > 0 {
-		out = append(out, sgrReset...)
+		dst = append(dst, sgrReset...)
 	}
 
-	return out
+	return dst
 }
 
 // setStyle updates the active style from an SGR sequence. A reset (a 0 or empty
@@ -191,9 +262,12 @@ func (c *cooker) setStyle(seq []byte) {
 	case sgrPureReset(params):
 		c.style = nil
 	case sgrHasReset(params):
-		c.style = append([]byte(nil), seq...) // a reset mixed with new attributes
+		c.style = bytes.Clone(seq) // a reset mixed with new attributes
 	default:
-		c.style = append(append([]byte(nil), c.style...), seq...)
+		style := make([]byte, 0, len(c.style)+len(seq))
+		style = append(style, c.style...)
+		style = append(style, seq...)
+		c.style = style
 	}
 }
 

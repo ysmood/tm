@@ -122,6 +122,99 @@ func TestCookAcrossChunks(t *testing.T) {
 	g.Eq(feed("caf\xc3", "\xa9\n"), "café\n")
 }
 
+// Feeding a stream one byte at a time exercises every split point — every
+// sequence and multi-byte rune straddles a boundary — and must produce the same
+// result as feeding it whole, proving the held/joined buffer reuse never
+// corrupts a straddling sequence.
+func TestCookBytewiseMatchesWhole(t *testing.T) {
+	g := got.T(t)
+
+	in := "plain \x1b[1;31mbold-red\x1b[0m café\r\n" +
+		"loading\rdone\x1b[K\n" +
+		"prompt$ \x1b[6n\x1b]0;title\x07 tab\there\n" +
+		"%     \r$ last"
+
+	var whole cooker
+	want := string(whole.cook([]byte(in))) + string(whole.tail())
+
+	var oneByte cooker
+
+	var got strings.Builder
+	for i := range len(in) {
+		got.Write(oneByte.cook([]byte(in[i : i+1])))
+	}
+
+	got.WriteString(string(oneByte.tail()))
+
+	g.Eq(got.String(), want)
+}
+
+// Output with no newline must not grow the in-progress line without bound: past
+// maxLineWidth the line soft-wraps, so cells stays capped while every character
+// is still recorded.
+func TestCookBoundsLineWithoutNewline(t *testing.T) {
+	g := got.T(t)
+
+	const n = maxLineWidth*2 + 100
+
+	var c cooker
+
+	var out strings.Builder
+	// Feed in chunks the size of a real PTY read, never a newline.
+	for fed := 0; fed < n; fed += 4096 {
+		size := min(4096, n-fed)
+		out.Write(c.cook([]byte(strings.Repeat("x", size))))
+
+		g.Desc("cells must stay bounded while no newline arrives").
+			Lte(len(c.cells), maxLineWidth)
+	}
+
+	out.WriteString(string(c.tail()))
+
+	// Every character is preserved; the buffer was bounded only by inserting
+	// soft-wrap newlines (two, for two full widths).
+	g.Eq(strings.Count(out.String(), "x"), n)
+	g.Eq(strings.Count(out.String(), "\n"), n/maxLineWidth)
+}
+
+// An unterminated escape sequence (no ST/BEL, as in a malformed or binary
+// stream) must not grow the held buffer without bound.
+func TestCookBoundsUnterminatedSequence(t *testing.T) {
+	g := got.T(t)
+
+	var c cooker
+
+	// An OSC that never terminates, fed forever in PTY-sized chunks.
+	c.cook([]byte("\x1b]0;"))
+
+	for range 8 {
+		c.cook([]byte(strings.Repeat("A", 32*1024)))
+
+		g.Desc("held must stay bounded for an unterminated sequence").
+			Lte(len(c.held), maxHeldBytes)
+	}
+}
+
+// cook returns a buffer it reuses, so callers must consume it before the next
+// call; within one run the returned lines are the completed ones and are stable
+// until then.
+func BenchmarkCook(b *testing.B) {
+	// A chunk of typical shell output: a colored prompt, a command echo, some
+	// plain output lines, and a CRLF-terminated tail.
+	chunk := []byte("\x1b[32muser@host\x1b[0m:\x1b[34m~/src\x1b[0m$ ls -la\r\n" +
+		"total 48\r\ndrwxr-xr-x  6 user staff  192 Jan  1 00:00 .\r\n" +
+		"-rw-r--r--  1 user staff 1024 Jan  1 00:00 README.md\r\n")
+
+	var c cooker
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		_ = c.cook(chunk)
+	}
+}
+
 // cook returns completed lines only; the in-progress line is held back until a
 // newline settles it, so an overwrite can still revise it before it is recorded.
 func TestCookReturnsCompletedLinesOnly(t *testing.T) {
