@@ -5,6 +5,7 @@
 package daemon
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"strings"
@@ -280,14 +281,17 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 		return true // resuming a session whose screen is still up: nothing to redraw
 	}
 
-	// Strip query sequences so replaying the window can't make the attaching
-	// terminal answer probes and inject the replies into the session.
-	hist := sanitizeReplay(d.sb.History(rows))
+	// The log is already cooked to visible text and color (see cooker), so the
+	// window carries no probes to answer and no clears to re-run; it only needs
+	// its bare newlines turned back into CRLF for a terminal in raw mode.
+	hist := d.sb.History(rows)
 
 	// A replay was asked for, but the wipe left nothing to show: explain the blank
 	// screen instead of replaying it.
 	if len(hist) == 0 && d.cleared {
 		hist = clearedHint
+	} else {
+		hist = crlf(hist)
 	}
 
 	if !replay(c, hist) {
@@ -313,6 +317,14 @@ func replay(c *proto.Conn, hist []byte) bool {
 	}
 
 	return c.Write(proto.MsgOutput, hist) == nil
+}
+
+// crlf turns the cooked log's bare newlines back into CRLF, so a replay lands
+// each line at column 0 on a terminal in raw mode (where a lone LF only moves
+// down). The cooked stream has no carriage returns of its own, so this can't
+// double up an existing one.
+func crlf(p []byte) []byte {
+	return bytes.ReplaceAll(p, []byte("\n"), []byte("\r\n"))
 }
 
 // serveInput processes client frames until detach, a read error, or EOF.

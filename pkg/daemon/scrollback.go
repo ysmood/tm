@@ -14,12 +14,16 @@ import (
 // been running.
 const TailBytes = 256 << 10 // 256 KiB
 
-// Scrollback records raw terminal output to an append-only log file, which is
-// the only place a session's history lives: nothing is buffered in memory, so an
-// attach reads its replay straight from the file.
+// Scrollback records a session's output to an append-only log file, which is the
+// only place its history lives. Raw PTY output is cooked to its visible form
+// (see cooker) before being written, so the log holds clean text and color —
+// what a pager shows for [history], and what an attach replays — rather than the
+// raw control stream a terminal would act on. Only newline-terminated lines are
+// written; the in-progress line is held in the cooker and surfaced by History.
 type Scrollback struct {
-	mu  sync.Mutex
-	log *os.File
+	mu   sync.Mutex
+	log  *os.File
+	cook cooker
 }
 
 // NewScrollback opens (creating it if needed) the log file the session appends
@@ -34,13 +38,15 @@ func NewScrollback(logPath string) (*Scrollback, error) {
 	return &Scrollback{log: f}, nil
 }
 
-// Write records a chunk of raw output.
+// Write cooks a chunk of raw output to its visible form and appends the lines it
+// completes to the log; the unfinished last line stays in the cooker until a
+// newline settles it (or History reads it as the live tail).
 func (s *Scrollback) Write(p []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.log != nil {
-		_, _ = s.log.Write(p)
+		_, _ = s.log.Write(s.cook.cook(p))
 	}
 }
 
@@ -67,7 +73,14 @@ func (s *Scrollback) History(rows int) []byte {
 		return nil
 	}
 
-	return tailLines(buf, rows)
+	// The file holds only completed lines; append the in-progress one (the live
+	// prompt) so a replay shows it too.
+	tail := s.cook.tail()
+	window := make([]byte, 0, len(buf)+len(tail))
+	window = append(window, buf...)
+	window = append(window, tail...)
+
+	return tailLines(window, rows)
 }
 
 // Clear discards the session's recorded history by truncating the log file in
@@ -78,6 +91,8 @@ func (s *Scrollback) History(rows int) []byte {
 func (s *Scrollback) Clear() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.cook.reset() // drop the in-progress line too, so nothing survives the wipe
 
 	if s.log != nil {
 		return s.log.Truncate(0)

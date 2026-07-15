@@ -515,10 +515,11 @@ func viewSessionHistory(p config.Paths, id string) string {
 
 // viewHistory pages a session's recorded scrollback log in less, connected to
 // the terminal, and returns once the user quits the pager. It is how [history]
-// shows a session's past output — the raw std.log the daemon records — the way
-// `git show` opens its output in a pager. The -R flag passes the log's ANSI
-// color escapes through so the history renders in color rather than as literal
-// escape sequences.
+// shows a session's past output — the std.log the daemon records — the way
+// `git show` opens its output in a pager. The daemon cooks that log to visible
+// text and color (see daemon.Scrollback), so it pages cleanly; the -R flag
+// passes its ANSI color escapes through so the history renders in color rather
+// than as literal escape sequences.
 //
 // It can only run once the menu (or relay) has released the terminal: less
 // takes it over wholesale. The log file always exists for a session in the
