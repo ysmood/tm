@@ -43,11 +43,10 @@ func TestCookVisibleForm(t *testing.T) {
 	check("[   ]\r[## ]\r[###]", "[###]")
 
 	// zsh's end-of-line marker: a "%", spaces to fill the row, a carriage return,
-	// then the next prompt overwrites from column 0 — the "%" is gone and the pad
-	// spaces are trimmed.
-	check("%     \r$ ", "$")
-	// With no following prompt (end of output) the marker itself is what shows.
-	check("%     ", "%")
+	// then the next prompt overwrites from column 0. The "%" is overwritten and
+	// the pad spaces beyond the cursor are dropped, but the prompt's own trailing
+	// space is kept — the cursor rests on it, so "$ " stays "$ ", not "$".
+	check("%     \r$ ", "$ ")
 
 	// Backspace moves the cursor back a column; the next write overwrites there.
 	check("abc\b\bXY", "aXY")
@@ -55,13 +54,13 @@ func TestCookVisibleForm(t *testing.T) {
 
 	// Non-SGR escapes are dropped: cursor motion, erases, and reply-soliciting
 	// queries all vanish, leaving only the text around them.
-	check("\x1b[2J\x1b[Hhi", "hi")      // clear screen + cursor home
-	check("a\x1b[Kb", "ab")             // erase-to-end-of-line
-	check("\x1b[6nprompt$ ", "prompt$") // DSR cursor-position query dropped
-	check("x\x1b[18t\x1b[>qy", "xy")    // XTWINOPS + XTVERSION probes dropped
-	check("t\x1b]0;title\x07u", "tu")   // OSC title set dropped (not visible text)
-	check("a\x1b]11;?\x07b", "ab")      // OSC color query dropped
-	check("a\x1bP+q544e\x1b\\b", "ab")  // DCS XTGETTCAP dropped
+	check("\x1b[2J\x1b[Hhi", "hi")       // clear screen + cursor home
+	check("a\x1b[Kb", "ab")              // erase-to-end-of-line
+	check("\x1b[6nprompt$ ", "prompt$ ") // DSR cursor-position query dropped
+	check("x\x1b[18t\x1b[>qy", "xy")     // XTWINOPS + XTVERSION probes dropped
+	check("t\x1b]0;title\x07u", "tu")    // OSC title set dropped (not visible text)
+	check("a\x1b]11;?\x07b", "ab")       // OSC color query dropped
+	check("a\x1bP+q544e\x1b\\b", "ab")   // DCS XTGETTCAP dropped
 
 	// Other control bytes are dropped: bell, form feed, DEL.
 	check("a\x07b\x0cc\x7fd", "abcd")
@@ -72,6 +71,29 @@ func TestCookVisibleForm(t *testing.T) {
 	// Trailing spaces on a line are dropped (terminal padding); interior spaces
 	// stay.
 	check("a b   \n", "a b\n")
+}
+
+// The live in-progress line (the tail) keeps a trailing space the cursor rests
+// on — a shell prompt's "$ " must not collapse to "$" on re-attach — while pad
+// spaces a redraw leaves beyond the cursor are still dropped, and a completed
+// line trims all its trailing padding.
+func TestCookTailKeepsPromptSpace(t *testing.T) {
+	g := got.T(t)
+
+	var live cooker
+
+	live.cook([]byte("$ "))
+	g.Eq(string(live.tail()), "$ ") // the prompt's trailing space survives
+
+	var marker cooker
+
+	marker.cook([]byte("%     \r$ ")) // marker pad spaces sit beyond the cursor
+	g.Eq(string(marker.tail()), "$ ") // dropped down to the cursor, the space kept
+
+	var done cooker
+
+	out := done.cook([]byte("$ echo hi   \n")) // a completed line trims its padding
+	g.Eq(string(out), "$ echo hi\n")
 }
 
 // SGR attributes accumulate and a reset clears them, so re-emitting the stored

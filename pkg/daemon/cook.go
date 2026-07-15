@@ -158,7 +158,8 @@ func (c *cooker) hold(rest []byte) {
 // clears it for the next one. The active style carries over, so a color that
 // spans the break stays in effect.
 func (c *cooker) flushLine() {
-	c.out = append(c.renderInto(c.out), '\n')
+	// A completed line trims all trailing spaces (redraw padding), so floor is 0.
+	c.out = append(c.renderInto(c.out, 0), '\n')
 	c.cells = c.cells[:0]
 	c.col = 0
 }
@@ -180,9 +181,11 @@ func (c *cooker) spliceHeld(p []byte) []byte {
 
 // tail returns the in-progress line's visible bytes as a fresh slice, so a
 // replay can show the live prompt that has not yet been committed with a newline
-// without disturbing cook's reused output buffer.
+// without disturbing cook's reused output buffer. Trailing spaces are kept up to
+// the cursor, so a prompt's trailing "$ " survives while a redraw's pad spaces
+// beyond the cursor are still dropped.
 func (c *cooker) tail() []byte {
-	return c.renderInto(nil)
+	return c.renderInto(nil, c.col)
 }
 
 // reset discards all buffered state, so a cleared session starts from a clean
@@ -219,11 +222,13 @@ func (c *cooker) put(text []byte) {
 // renderInto appends the current line's visible bytes to dst and returns it: the
 // text, with each cell's style emitted when it changes (reset first, so a run's
 // style never carries over from the previous one), and a closing reset if the
-// line ended styled. Trailing spaces are dropped — a terminal pads a redrawn line
-// out to its width, but a log needs no padding.
-func (c *cooker) renderInto(dst []byte) []byte {
+// line ended styled. Trailing spaces down to floor are dropped — a terminal pads
+// a redrawn line out to its width, but a log needs no padding. floor keeps the
+// live tail's trailing spaces up to the cursor (a prompt's "$ "), while dropping
+// the pad spaces a redraw leaves beyond it.
+func (c *cooker) renderInto(dst []byte, floor int) []byte {
 	end := len(c.cells)
-	for end > 0 && c.cells[end-1].isSpace() {
+	for end > floor && c.cells[end-1].isSpace() {
 		end--
 	}
 
