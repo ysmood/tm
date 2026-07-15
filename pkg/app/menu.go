@@ -615,15 +615,23 @@ func (g promptGuard) restorePrompt(notices []string) {
 	// line surgery: inserting and deleting lines moves the cursor to the first
 	// column on VT/xterm-family terminals, so the column only survives the
 	// surgery inside the terminal's save register.
-	b.WriteString("\x1b8")           // DECRC: onto the prompt row
-	b.WriteString("\x1b[" + k + "B") // down to where the prompt is about to land
-	b.WriteString("\x1b7")           // DECSC: re-save — the session resumes here
-	b.WriteString("\x1b[" + k + "A") // back up onto the prompt row
-	b.WriteString("\x1b[B")          // down onto the first notice row
-	b.WriteString("\x1b[" + k + "M") // delete the notice rows below the prompt
-	b.WriteString("\x1b[A")          // up onto the prompt row
-	b.WriteString("\x1b[" + k + "L") // insert blanks above it, pushing the prompt down
-	b.WriteString("\r")              // column 0 for the rewrite (IL may already have)
+	b.WriteString("\x1b8") // DECRC: onto the prompt row
+	b.WriteString("\x1b[")
+	b.WriteString(k)
+	b.WriteString("B")     // down to where the prompt is about to land
+	b.WriteString("\x1b7") // DECSC: re-save — the session resumes here
+	b.WriteString("\x1b[")
+	b.WriteString(k)
+	b.WriteString("A")      // back up onto the prompt row
+	b.WriteString("\x1b[B") // down onto the first notice row
+	b.WriteString("\x1b[")
+	b.WriteString(k)
+	b.WriteString("M")      // delete the notice rows below the prompt
+	b.WriteString("\x1b[A") // up onto the prompt row
+	b.WriteString("\x1b[")
+	b.WriteString(k)
+	b.WriteString("L")  // insert blanks above it, pushing the prompt down
+	b.WriteString("\r") // column 0 for the rewrite (IL may already have)
 
 	for i, n := range notices {
 		if i > 0 {
