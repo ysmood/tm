@@ -236,7 +236,14 @@ func (p *picker) update(msg tea.KeyPressMsg) (pickerAction, tea.Cmd) {
 
 	var cmd tea.Cmd
 
-	p.input, cmd = p.input.Update(msg)
+	// Word motion and word deletes are handled by wordKey, punctuation-aware,
+	// instead of by the textarea's whitespace-only versions; everything else is
+	// text editing forwarded to the query textarea. Either way, a changed value
+	// (a word delete, typed text) narrows the list.
+	if !wordKey(&p.input, msg) {
+		p.input, cmd = p.input.Update(msg)
+	}
+
 	if p.input.Value() != before {
 		p.refilter()
 	}

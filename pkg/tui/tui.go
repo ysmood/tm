@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -317,6 +318,72 @@ func newInput(prompt string) textarea.Model {
 	ta.SetStyles(s)
 
 	return ta
+}
+
+// isWordRune reports whether r belongs to a word as wordKey sees them: letters
+// and digits, the way readline's backward-word/forward-word define words.
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+
+// prevWordStart and nextWordEnd scan from col to the readline word boundary on
+// either side: back to the start of the word to the left, forward past the end
+// of the word to the right (see isWordRune).
+func prevWordStart(val []rune, col int) int {
+	for col > 0 && !isWordRune(val[col-1]) {
+		col--
+	}
+
+	for col > 0 && isWordRune(val[col-1]) {
+		col--
+	}
+
+	return col
+}
+
+func nextWordEnd(val []rune, col int) int {
+	for col < len(val) && !isWordRune(val[col]) {
+		col++
+	}
+
+	for col < len(val) && isWordRune(val[col]) {
+		col++
+	}
+
+	return col
+}
+
+// wordKey intercepts the word keys for a single-line input, reporting whether
+// it consumed the key: motion — option/alt+arrow, their ESC b/f forms
+// (Terminal.app, VS Code), and the ctrl/meta+arrow variants other terminals
+// send — and deletion — option+backspace and alt+d/alt+delete, with the same
+// ctrl/meta variants. The textarea's built-in word handling breaks on
+// whitespace alone, and the values these inputs hold — session names, filter
+// queries — separate words with punctuation ("ysmood/tm-2"), so its word
+// motion read as jump-to-start/end and its word deletes ate the whole value.
+// A word here is readline's — a run of letters and digits — matching what the
+// same keys do at a shell prompt. Ctrl-W stays with the textarea: at a shell
+// it rubs out to whitespace (unix-word-rubout), distinct from
+// option+backspace, so whitespace-only is already the terminal behavior.
+func wordKey(in *textarea.Model, msg tea.KeyPressMsg) bool {
+	val := []rune(in.Value())
+	col := max(0, min(in.Column(), len(val)))
+
+	switch msg.String() {
+	case "alt+left", "alt+b", "ctrl+left", "meta+left":
+		in.SetCursorColumn(prevWordStart(val, col))
+	case "alt+right", "alt+f", "ctrl+right", "meta+right":
+		in.SetCursorColumn(nextWordEnd(val, col))
+	case "alt+backspace", "ctrl+backspace", "meta+backspace":
+		start := prevWordStart(val, col)
+		in.SetValue(string(val[:start]) + string(val[col:]))
+		in.SetCursorColumn(start)
+	case "alt+delete", "alt+d", "ctrl+delete", "meta+delete":
+		in.SetValue(string(val[:col]) + string(val[nextWordEnd(val, col):]))
+		in.SetCursorColumn(col)
+	default:
+		return false
+	}
+
+	return true
 }
 
 // Init satisfies tea.Model.
@@ -974,6 +1041,12 @@ func (m Model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case keyEnter:
 		return m.submitInput(strings.TrimSpace(m.input.Value()))
+	}
+
+	// Word motion and word deletes are handled here, punctuation-aware, instead
+	// of by the textarea's whitespace-only versions (see wordKey).
+	if wordKey(&m.input, msg) {
+		return m, nil
 	}
 
 	var cmd tea.Cmd
