@@ -95,6 +95,15 @@ func TestInputWordDelete(t *testing.T) {
 
 	m = send(m, tea.KeyPressMsg{Code: tea.KeyDelete, Mod: tea.ModAlt})
 	g.Eq(m.input.Value(), "")
+
+	// A slash separates words too, and Ctrl-W — what several terminals send for
+	// option+backspace — deletes the same single word, not the whole value.
+	m = typeStr(m, "test/test")
+	m = send(m, ctrlKey('w'))
+	g.Eq(m.input.Value(), "test/")
+
+	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace, Mod: tea.ModAlt})
+	g.Eq(m.input.Value(), "")
 }
 
 // A word delete in the picker's filter refilters the list, just as typing does.

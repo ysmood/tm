@@ -359,10 +359,11 @@ func nextWordEnd(val []rune, col int) int {
 // whitespace alone, and the values these inputs hold — session names, filter
 // queries — separate words with punctuation ("ysmood/tm-2"), so its word
 // motion read as jump-to-start/end and its word deletes ate the whole value.
-// A word here is readline's — a run of letters and digits — matching what the
-// same keys do at a shell prompt. Ctrl-W stays with the textarea: at a shell
-// it rubs out to whitespace (unix-word-rubout), distinct from
-// option+backspace, so whitespace-only is already the terminal behavior.
+// A word here is readline's — a run of letters and digits — so a delete over
+// "test/test" takes only the last "test". Ctrl-W is included: it is what
+// several terminals (iTerm2's natural-editing preset among them) send for
+// option+backspace, so it must not fall through to the textarea's
+// whitespace-only delete.
 func wordKey(in *textarea.Model, msg tea.KeyPressMsg) bool {
 	val := []rune(in.Value())
 	col := max(0, min(in.Column(), len(val)))
@@ -372,7 +373,7 @@ func wordKey(in *textarea.Model, msg tea.KeyPressMsg) bool {
 		in.SetCursorColumn(prevWordStart(val, col))
 	case "alt+right", "alt+f", "ctrl+right", "meta+right":
 		in.SetCursorColumn(nextWordEnd(val, col))
-	case "alt+backspace", "ctrl+backspace", "meta+backspace":
+	case "alt+backspace", "ctrl+backspace", "meta+backspace", "ctrl+w":
 		start := prevWordStart(val, col)
 		in.SetValue(string(val[:start]) + string(val[col:]))
 		in.SetCursorColumn(start)
