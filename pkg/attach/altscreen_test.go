@@ -19,6 +19,8 @@ func TestRestoreFor(t *testing.T) {
 	g.False(bytes.Contains(mainScreen, []byte(altScreenExit))) // no rmcup -> scrollback kept
 	g.True(bytes.Contains(mainScreen, []byte("\x1b[r")))       // modes still reset
 	g.True(bytes.Contains(mainScreen, []byte("\x1b[?25h")))
+	g.True(bytes.Contains(mainScreen, []byte("\x1b[=0;1u"))) // kitty keyboard flags cleared
+	g.True(bytes.Contains(mainScreen, []byte("\x1b[>4m")))   // modifyOtherKeys off
 
 	altScreen := RestoreFor(true)
 	g.True(bytes.Contains(altScreen, []byte(altScreenExit))) // leaves the alt screen

@@ -24,9 +24,14 @@ const (
 	readBufSize = 32 * 1024
 )
 
-// softReset is a VT soft terminal reset (DECSTR), sent before replaying history
-// so the terminal recovers from attaching into the middle of a full-screen app.
-var softReset = []byte("\x1b[!p")
+// softReset is sent before replaying history so the terminal recovers from
+// attaching into the middle of a full-screen app: a VT soft terminal reset
+// (DECSTR), plus clearing the keyboard protocols DECSTR does not cover (kitty
+// flags, xterm modifyOtherKeys) — a stale protocol left on the terminal would
+// re-encode keys, taking the relay's Ctrl-\ menu key with it. The state
+// restore that follows the history re-arms them when the session's app has
+// them on (see termModes).
+var softReset = []byte("\x1b[!p\x1b[=0;1u\x1b[>4m")
 
 // clearedHint is replayed in place of history when a cleared session is
 // attached with nothing recorded since the wipe: the shell prints its prompt
@@ -263,21 +268,10 @@ func (d *Daemon) forwardSwitch(payload []byte) {
 // running full-screen app, which is why the resize also happens under the
 // lock. It returns false if the client went away during the replay.
 func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
-	rows := int(att.Rows)
-	if att.Cols <= 0 || att.Rows <= 0 {
-		rows = defaultRows
-	}
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	resized := false
-
-	if att.Cols > 0 && att.Rows > 0 && (int(att.Cols) != d.cols || int(att.Rows) != d.rows) {
-		_ = d.pty.Resize(int(att.Cols), int(att.Rows))
-		d.cols, d.rows = int(att.Cols), int(att.Rows)
-		resized = true
-	}
+	resized := d.resizeTo(int(att.Cols), int(att.Rows))
 
 	if d.client != nil {
 		_ = d.client.Close()
@@ -285,40 +279,73 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 
 	d.client = c
 
-	if !att.Replay {
-		return true // resuming a session whose screen is still up: nothing to redraw
+	var alt bool
+
+	if att.Replay {
+		hist, restore, replayAlt := d.replayWindow(int(att.Rows))
+		if !replay(c, hist, restore) {
+			d.client = nil
+
+			return false
+		}
+
+		alt = replayAlt
+	} else {
+		// Resuming a session whose screen is still up: nothing to replay. The
+		// menu may just have closed over it, though, so the repaint decision
+		// below still applies.
+		_, alt = d.sb.TermState()
 	}
 
-	// The log is already cooked to visible text and color (see cooker), so the
-	// window carries no probes to answer and no clears to re-run; it only needs
-	// its bare newlines turned back into CRLF for a terminal in raw mode.
-	hist := d.sb.History(rows)
-	restore, alt := d.sb.TermState()
+	// The session is inside a full-screen app, whose alt-screen content is not
+	// recorded — only the app itself can rebuild it, whether a replay just
+	// re-entered its screen or a closing menu left a hole in it. A size change
+	// above already made it repaint; an attach at the same size delivered no
+	// SIGWINCH, so nudge one out of it. The mutex order guarantees the repaint
+	// reaches the client after the replay.
+	if alt && !resized {
+		go d.nudgeRepaint(d.cols, d.rows)
+	}
 
-	// A replay was asked for, but the wipe left nothing to show: explain the blank
-	// screen instead of replaying it.
+	return true
+}
+
+// resizeTo applies an attach's terminal size to the PTY when it is valid and
+// actually different, reporting whether a resize happened. The caller holds
+// d.mu.
+func (d *Daemon) resizeTo(cols, rows int) bool {
+	if cols <= 0 || rows <= 0 || (cols == d.cols && rows == d.rows) {
+		return false
+	}
+
+	_ = d.pty.Resize(cols, rows)
+	d.cols, d.rows = cols, rows
+
+	return true
+}
+
+// replayWindow assembles what a replaying attach sends: the last window of
+// recorded output and the terminal-state restore, plus whether the session is
+// on the alt screen. The log is already cooked to visible text and color (see
+// cooker), so the window carries no probes to answer and no clears to re-run;
+// it only needs its bare newlines turned back into CRLF for a terminal in raw
+// mode. When a wipe left nothing to show, the window explains the blank screen
+// instead (see clearedHint). The caller holds d.mu.
+func (d *Daemon) replayWindow(rows int) (hist, restore []byte, alt bool) {
+	if rows <= 0 {
+		rows = defaultRows
+	}
+
+	hist = d.sb.History(rows)
+	restore, alt = d.sb.TermState()
+
 	if len(hist) == 0 && d.cleared {
 		hist = clearedHint
 	} else {
 		hist = crlf(hist)
 	}
 
-	if !replay(c, hist, restore) {
-		d.client = nil
-
-		return false
-	}
-
-	// The session is inside a full-screen app, whose alt-screen content is not
-	// recorded — only the app itself can rebuild it. A size change above already
-	// made it repaint; an attach at the same size delivered no SIGWINCH, so
-	// nudge one out of it. The mutex order guarantees the repaint reaches the
-	// client after the replay's alt-screen re-entry.
-	if alt && !resized {
-		go d.nudgeRepaint(d.cols, d.rows)
-	}
-
-	return true
+	return hist, restore, alt
 }
 
 // replay sends the soft reset, the recorded window, and the terminal-state

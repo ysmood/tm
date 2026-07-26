@@ -28,6 +28,21 @@ import (
 // what every other part of tm tells the user to press.
 const menuKey = 0x1c
 
+// menuKeySeqs are every encoding the terminal may use for Ctrl-\. A terminal
+// sends the raw 0x1c byte only in the legacy encoding: once a program in the
+// session switches the terminal to the kitty keyboard protocol ("\x1b[=1u" —
+// lazygit and other tcell v3 apps do, when the terminal supports it) or to
+// xterm's modifyOtherKeys, Ctrl-\ arrives as an escape sequence instead. The
+// relay must recognize those too, or the menu key goes dead exactly while such
+// an app is on screen. 92 is '\', modifier 5 is Ctrl (4) + 1.
+var menuKeySeqs = [][]byte{
+	{menuKey},
+	[]byte("\x1b[92;5u"),    // kitty protocol / modifyOtherKeys CSI-u format
+	[]byte("\x1b[92;5:1u"),  // kitty with event-type reporting: press
+	[]byte("\x1b[92;5:2u"),  // kitty with event-type reporting: repeat
+	[]byte("\x1b[27;5;92~"), // xterm modifyOtherKeys=2 legacy format
+}
+
 // Leaving a session returns the local terminal to a sane baseline. A session's
 // PTY has its own terminal state, independent of the outer terminal's: a
 // full-screen program run inside it (vim, less, htop, a git pager, any TUI)
@@ -58,6 +73,8 @@ const (
 		"\x1b[?1005l\x1b[?1006l\x1b[?1015l" + // disable UTF-8 / SGR / urxvt mouse encodings
 		"\x1b[?1004l" + // disable focus reporting
 		"\x1b[?2004l" + // disable bracketed paste
+		"\x1b[=0;1u" + // kitty keyboard protocol flags cleared (keys back to legacy bytes)
+		"\x1b[>4m" + // xterm modifyOtherKeys off
 		"\x1b[?7h" + // re-enable auto-wrap (DECAWM)
 		"\x1b[?1l\x1b>" + // normal cursor keys (DECCKM) and keypad (DECKPNM)
 		// Reset the scroll region to the full screen (DECSTBM). DECSTBM homes the
@@ -115,6 +132,13 @@ type Options struct {
 	// the live stream. It is what an attach or a switch wants; resuming a session
 	// the terminal is still showing leaves it off.
 	Replay bool
+	// InAltScreen seeds the relay's alternate-screen tracking with what the
+	// caller already knows: a resume (Replay off) redraws nothing, so a session
+	// sitting quietly inside a full-screen app would otherwise read as
+	// main-screen and a later detach would skip the alt-screen exit, leaving
+	// the terminal stuck in the app's dead screen. A replaying attach ignores
+	// it — the replayed window re-establishes the state itself.
+	InAltScreen bool
 	// Name is the display name of the session first attached to, used for the
 	// status notice printed if that session's shell exits. It is empty when the
 	// name is unknown (e.g. the bare __attach relay), which suppresses the notice.
@@ -238,6 +262,7 @@ func runRelay(
 	addrOf func(string) string, id string,
 ) (outcome Outcome, leftAlt bool, err error) {
 	r := &relay{ready: make(chan struct{})}
+	r.alt.Store(opt.InAltScreen) // a replaying attach resets this in dialSession
 
 	// curName tracks the session the relay is currently on (updated as it switches
 	// internally), so the exit notice below names the right session.
@@ -389,9 +414,13 @@ func (r *relay) session(
 }
 
 // dialSession dials addr and sends the attach request, returning the framed
-// connection. It also resets the alternate-screen tracking, so each attachment
-// decides it from its own output (the replayed window re-establishes it if the
-// session is mid-full-screen-app).
+// connection. On a replaying attach it also resets the alternate-screen
+// tracking, so the attachment decides it from its own output (the replayed
+// window re-establishes it if the session is mid-full-screen-app). A resume
+// (no replay) keeps the tracked state instead: the session's screen never
+// went away and replays nothing, so resetting would forget it is on the alt
+// screen and a later detach would skip the alt-screen exit — leaving the
+// terminal stuck inside the dead app's screen.
 func (r *relay) dialSession(addr string, opt Options) (net.Conn, *proto.Conn, error) {
 	nc, err := proto.Dial(addr)
 	if err != nil {
@@ -409,7 +438,9 @@ func (r *relay) dialSession(addr string, opt Options) (net.Conn, *proto.Conn, er
 		return nil, nil, aerr
 	}
 
-	r.resetAlt()
+	if opt.Replay {
+		r.resetAlt()
+	}
 
 	return nc, c, nil
 }
@@ -530,12 +561,12 @@ func (r *relay) inputLoop(in io.Reader, ended <-chan struct{}, onEnd func()) {
 }
 
 // forwardInput handles one chunk of local input: it forwards it to the current
-// session connection, stopping at the menu key — the bytes before the key are
-// still forwarded, and the menu flag is set before the caller signals end, so
-// the ended-channel reader sees it. It reports whether the input loop should
-// stop.
+// session connection, stopping at the menu key in any of its encodings (see
+// menuKeySeqs) — the bytes before the key are still forwarded, and the menu
+// flag is set before the caller signals end, so the ended-channel reader sees
+// it. It reports whether the input loop should stop.
 func (r *relay) forwardInput(data []byte) (stop bool) {
-	i := bytes.IndexByte(data, menuKey)
+	i := findMenuKey(data)
 	if i < 0 {
 		r.sendInput(data)
 
@@ -549,6 +580,21 @@ func (r *relay) forwardInput(data []byte) (stop bool) {
 	r.menu.Store(true)
 
 	return true
+}
+
+// findMenuKey returns the index of the earliest menu-key encoding in data, or
+// -1 if none is present. A key press arrives as one whole read from the
+// terminal, so an encoding is never split across chunks.
+func findMenuKey(data []byte) int {
+	idx := -1
+
+	for _, seq := range menuKeySeqs {
+		if i := bytes.Index(data, seq); i >= 0 && (idx < 0 || i < idx) {
+			idx = i
+		}
+	}
+
+	return idx
 }
 
 // sendInput forwards local input bytes to the current session connection,

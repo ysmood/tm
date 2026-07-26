@@ -415,8 +415,11 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		targetName := sessionName(st, targetID)
 		announceAttach(curID, targetID, targetName)
 
+		// curAlt seeds the relay's alt-screen tracking for a resume (no replay,
+		// so nothing re-establishes it): the session may still be inside a
+		// full-screen app that stays quiet until the next detach.
 		outcome, alt, aerr := attach.Run(st.Paths(), targetID,
-			attach.Options{Replay: replay, Name: targetName})
+			attach.Options{Replay: replay, InAltScreen: curAlt, Name: targetName})
 
 		next, done := afterRelay(st, ctrl, targetID, alt, outcome, aerr)
 		if done {

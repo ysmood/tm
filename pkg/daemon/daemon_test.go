@@ -618,6 +618,19 @@ func TestReattachRestoresFullScreenApp(t *testing.T) {
 	g.Has(stream, "\x1b[?25l")
 	g.Has(stream, "\x1b[?1002h")
 	g.Has(stream, "\x1b[?1006h")
+
+	settle(nc2, c2)
+
+	// A resume-style attach (no replay — the screen is still up, e.g. the menu
+	// just closed over it) must still nudge the app to repaint: the menu drew
+	// over the app's screen and its teardown left a hole the app knows nothing
+	// about. The resume itself stays replay-free.
+	nc3, c3 := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
+	defer nc3.Close()
+
+	stream = readStreamUntil(nc3, c3, "REPAINTED")
+	g.Has(stream, "REPAINTED")
+	g.True(!strings.Contains(stream, "\x1b[!p")) // no replay on a resume
 }
 
 // readStreamUntil accumulates Output frames until want appears (or the read

@@ -30,6 +30,18 @@ type termModes struct {
 	// 1015 urxvt), or 0 for the legacy default.
 	mouseEnc int
 
+	// kittyFlags is the kitty keyboard protocol's active flag set ("\x1b[=1u"
+	// and friends), 0 when the legacy encoding is in effect. kittyStack holds
+	// the flag sets saved by pushes ("\x1b[>1u"), so a pop restores the right
+	// one. Modern TUIs (tcell v3 — lazygit — and Bubble Tea) switch this on
+	// when the terminal supports it, and it changes how every modified key —
+	// including tm's own Ctrl-\ — reaches the relay.
+	kittyFlags int
+	kittyStack []int
+	// modifyKeys is xterm's modifyOtherKeys level ("\x1b[>4;2m"), 0 when off —
+	// the older cousin of the kitty protocol, with the same consequences.
+	modifyKeys int
+
 	appCursor    bool // DECCKM (?1): cursor keys send application sequences
 	appKeypad    bool // DECKPAM (ESC =): keypad sends application sequences
 	cursorHidden bool // DECTCEM (?25) switched off
@@ -53,19 +65,114 @@ func (m *termModes) track(seq []byte) {
 		return
 	}
 
-	// Everything else tracked is a DEC private mode set/reset: "\x1b[?Pm...h/l",
-	// where Pm is one or more ';'-separated mode numbers.
-	if len(seq) < 5 || seq[1] != '[' || seq[2] != '?' {
+	if len(seq) < 4 || seq[1] != '[' {
 		return
 	}
 
-	final := seq[len(seq)-1]
-	if final != 'h' && final != 'l' {
+	switch final := seq[len(seq)-1]; {
+	case final == 'u':
+		m.trackKitty(seq)
+
+		return
+	case final == 'm' && seq[2] == '>':
+		m.trackModifyKeys(seq)
+
+		return
+	case final != 'h' && final != 'l':
 		return
 	}
+
+	// What remains tracked is a DEC private mode set/reset: "\x1b[?Pm...h/l",
+	// where Pm is one or more ';'-separated mode numbers.
+	if len(seq) < 5 || seq[2] != '?' {
+		return
+	}
+
+	on := seq[len(seq)-1] == 'h'
 
 	for f := range bytes.SplitSeq(seq[3:len(seq)-1], []byte{';'}) {
-		m.set(modeParam(f), final == 'h')
+		m.set(modeParam(f), on)
+	}
+}
+
+// kittyStackCap bounds the pushed-flags stack; kitty itself caps its stack and
+// discards the oldest entry past the cap, and so does this.
+const kittyStackCap = 16
+
+// trackKitty applies a kitty keyboard protocol sequence: set ("\x1b[=f;mu"),
+// push ("\x1b[>fu"), or pop ("\x1b[<nu"). A bare "\x1b[u" (SCO restore-cursor)
+// and the "\x1b[?u" query pass through untouched.
+func (m *termModes) trackKitty(seq []byte) {
+	body := seq[3 : len(seq)-1]
+
+	switch seq[2] {
+	case '=':
+		flags, mode := splitKittyParams(body)
+		switch mode {
+		case 1:
+			m.kittyFlags = flags
+		case 2:
+			m.kittyFlags |= flags
+		case 3:
+			m.kittyFlags &^= flags
+		}
+	case '>':
+		m.kittyStack = append(m.kittyStack, m.kittyFlags)
+		if len(m.kittyStack) > kittyStackCap {
+			m.kittyStack = m.kittyStack[1:]
+		}
+
+		flags, _ := splitKittyParams(body)
+		m.kittyFlags = flags
+	case '<':
+		n := max(modeParam(body), 1)
+		for ; n > 0; n-- {
+			if len(m.kittyStack) == 0 {
+				m.kittyFlags = 0 // popping past the stack resets, per the spec
+
+				break
+			}
+
+			m.kittyFlags = m.kittyStack[len(m.kittyStack)-1]
+			m.kittyStack = m.kittyStack[:len(m.kittyStack)-1]
+		}
+	}
+}
+
+// splitKittyParams parses "flags[;mode]" from a kitty set/push body. Absent or
+// invalid flags mean 0; an absent mode defaults to 1 (set), per the protocol.
+func splitKittyParams(body []byte) (flags, mode int) {
+	f, m, found := bytes.Cut(body, []byte{';'})
+
+	flags = max(modeParam(f), 0)
+
+	mode = 1
+	if found {
+		mode = modeParam(m)
+	}
+
+	return flags, mode
+}
+
+// trackModifyKeys applies an xterm modify-keys resource sequence ("\x1b[>Pp;Pvm").
+// Only resource 4 (modifyOtherKeys) is tracked; "\x1b[>4m" and the reset-all
+// "\x1b[>m" switch it off.
+func (m *termModes) trackModifyKeys(seq []byte) {
+	body := seq[3 : len(seq)-1]
+	if len(body) == 0 {
+		m.modifyKeys = 0 // "\x1b[>m" resets every modify-keys resource
+
+		return
+	}
+
+	p, v, found := bytes.Cut(body, []byte{';'})
+	if modeParam(p) != 4 {
+		return
+	}
+
+	m.modifyKeys = 0
+	if found {
+		m.modifyKeys = max(modeParam(v), 0)
 	}
 }
 
@@ -149,6 +256,21 @@ func (m termModes) restore() []byte {
 
 	if m.mouseEnc != 0 {
 		b = append(b, privateMode(m.mouseEnc, true)...)
+	}
+
+	// The keyboard protocols are restored with the set form regardless of how
+	// the app enabled them: the effective encoding is what matters, and the
+	// replay's preamble (see softReset) has already cleared any stale state.
+	if m.modifyKeys != 0 {
+		b = append(b, "\x1b[>4;"...)
+		b = strconv.AppendInt(b, int64(m.modifyKeys), 10)
+		b = append(b, 'm')
+	}
+
+	if m.kittyFlags != 0 {
+		b = append(b, "\x1b[="...)
+		b = strconv.AppendInt(b, int64(m.kittyFlags), 10)
+		b = append(b, ";1u"...)
 	}
 
 	return b

@@ -79,6 +79,40 @@ func TestModesInputModes(t *testing.T) {
 	g.Len(modesAfter("\x1b[?12h\x1b[2J\x1b[31m\x1b(B").restore(), 0)
 }
 
+// The keyboard protocols re-encode every modified key — including the relay's
+// Ctrl-\ menu key — so the tracker must follow them exactly: kitty's set /
+// or / not modes and its push/pop stack, and xterm's modifyOtherKeys, with
+// the restore re-arming whatever is in effect.
+func TestModesKeyboardProtocols(t *testing.T) {
+	g := got.T(t)
+
+	// kitty set form, with and without the explicit mode.
+	g.Eq(modesAfter("\x1b[=1u").kittyFlags, 1)
+	g.Eq(modesAfter("\x1b[=1;1u").kittyFlags, 1)
+	g.Eq(modesAfter("\x1b[=1u", "\x1b[=0u").kittyFlags, 0)
+	g.Eq(modesAfter("\x1b[=1u\x1b[=2;2u").kittyFlags, 3) // mode 2 ors flags in
+	g.Eq(modesAfter("\x1b[=3u\x1b[=1;3u").kittyFlags, 2) // mode 3 clears them
+
+	// push/pop keep a stack; popping past it resets, per the spec.
+	g.Eq(modesAfter("\x1b[>1u").kittyFlags, 1)
+	g.Eq(modesAfter("\x1b[=2u\x1b[>1u\x1b[<u").kittyFlags, 2)
+	g.Eq(modesAfter("\x1b[<5u").kittyFlags, 0)
+
+	// SCO restore-cursor and the kitty query are not flag changes.
+	g.Eq(modesAfter("\x1b[=1u\x1b[u\x1b[?u").kittyFlags, 1)
+
+	// modifyOtherKeys: only resource 4, with "\x1b[>4m" and the reset-all
+	// "\x1b[>m" switching it off.
+	g.Eq(modesAfter("\x1b[>4;2m").modifyKeys, 2)
+	g.Eq(modesAfter("\x1b[>4;2m\x1b[>4m").modifyKeys, 0)
+	g.Eq(modesAfter("\x1b[>4;2m\x1b[>m").modifyKeys, 0)
+	g.Eq(modesAfter("\x1b[>4;2m\x1b[>1;2m").modifyKeys, 2) // other resources ignored
+
+	// The restore re-arms both with the set form.
+	g.Eq(string(modesAfter("\x1b[=1u\x1b[>4;2m").restore()), "\x1b[>4;2m\x1b[=1;1u")
+	g.Len(modesAfter("\x1b[=1u\x1b[=0u\x1b[>4m").restore(), 0)
+}
+
 // A history wipe resets the cooker's buffered content but not the tracked
 // terminal state: the session's terminal is still inside whatever app was
 // running, so recording stays suppressed and an attach still restores it.
