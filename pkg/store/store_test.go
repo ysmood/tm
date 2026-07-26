@@ -47,7 +47,7 @@ func TestSaveAndGet(t *testing.T) {
 func TestGetMissing(t *testing.T) {
 	g, st := setup(t)
 	_, err := st.GetSession("nope")
-	g.Is(err, store.ErrNotFound)
+	g.Err(err)
 }
 
 func TestListSortedByCreation(t *testing.T) {
@@ -90,7 +90,7 @@ func TestDeleteSession(t *testing.T) {
 
 	g.E(st.DeleteSession("z"))
 	_, err := st.GetSession("z")
-	g.Is(err, store.ErrNotFound)
+	g.Err(err)
 
 	// Deleting a missing session is a no-op.
 	g.E(st.DeleteSession("z"))
@@ -123,7 +123,7 @@ func TestRenameSessionRejectsEmptyName(t *testing.T) {
 
 func TestRenameMissingSession(t *testing.T) {
 	g, st := setup(t)
-	g.Is(st.RenameSession("nope", "x"), store.ErrNotFound)
+	g.Err(st.RenameSession("nope", "x"))
 }
 
 // Names are unique within a namespace, so a name a sibling holds is rejected —

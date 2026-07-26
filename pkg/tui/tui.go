@@ -166,21 +166,11 @@ type menuPayload struct {
 // yet surfaces this row (see showNamespaces).
 type newNamespacePayload struct{ name string }
 
-// renamePayload is the data attached to a rename-chooser row: the session the
-// name prompt will rename, and the name it prefills with.
-type renamePayload struct{ id, name string }
-
-// killPayload is the data attached to a kill-chooser row: the session to end,
-// and its name for the notice printed afterwards.
-type killPayload struct{ id, name string }
-
-// clearPayload is the data attached to a clear-history-chooser row: the session
-// whose history to wipe, and its name for the notice printed afterwards.
-type clearPayload struct{ id, name string }
-
-// historyPayload is the data attached to a history-chooser row: the session
-// whose recorded scrollback log app.Run pages in less.
-type historyPayload struct{ id string }
+// sessPayload is the data attached to a row of any session chooser — rename,
+// kill, clear history, history (see showSessions): the session the command acts
+// on, and its name, which prefills the rename prompt and names the session in
+// the notice printed afterwards.
+type sessPayload struct{ id, name string }
 
 // currentHint marks the session this menu is framed inside in choosers that
 // keep it (rename, kill, clear history), so it reads apart from the others —
@@ -461,13 +451,22 @@ func (m *Model) showMenu() {
 	m.pick.setItems(m.menuItems())
 }
 
-// showRenameSessions lists the sessions [rename session] can target, and reports
-// false when the namespace holds none, so the caller says so rather than opening
-// an empty picker. Unlike the main menu it keeps the session this tm is running
-// inside — marked "current", like the other choosers that keep it — since
-// renaming the session you are in is the common case, and a rename never
-// attaches, so there is nothing to re-enter.
-func (m *Model) showRenameSessions() bool {
+// showSessions opens one of the session choosers — the pickers that ask which
+// session a command acts on: [rename session], [kill session], [clear history],
+// [history]. All four list the same thing (every session in the active
+// namespace), so they are one picker parameterized by what the pick is for.
+//
+// Unlike the main attach list they keep the session this tm is running inside,
+// marked "current". That is deliberate for each: renaming or clearing the
+// session you are in is the common case (a secret was just echoed there) and
+// neither disturbs what is on screen; paging your own history in less restores
+// the terminal on quit; and killing it, which does end what this terminal shows
+// (see ActionKillCurrent), is how a stuck shell gets put down without leaving it
+// first.
+//
+// It reports false when the namespace holds no sessions, so the caller says so
+// rather than opening an empty picker.
+func (m *Model) showSessions(p pickPurpose) bool {
 	sessions, _ := m.st.ListByNamespace(m.ns)
 	if len(sessions) == 0 {
 		return false
@@ -479,7 +478,7 @@ func (m *Model) showRenameSessions() bool {
 		item := pickerItem{
 			label:   m.sessionLabel(s),
 			text:    s.Name,
-			payload: renamePayload{id: s.ID, name: s.Name},
+			payload: sessPayload{id: s.ID, name: s.Name},
 		}
 		if s.ID == m.curSessionID {
 			item.hint = currentHint
@@ -489,109 +488,7 @@ func (m *Model) showRenameSessions() bool {
 	}
 
 	m.mode = modePick
-	m.pickFor = pickRenameSession
-	m.pick.setItems(items)
-
-	return true
-}
-
-// showKillSessions lists the sessions [kill session] can target, and reports
-// false when the namespace holds none, so the caller says so rather than opening
-// an empty picker. Unlike the main attach list it keeps the session this tm is
-// running inside — marked "current", since killing it also ends what is on this
-// terminal (see ActionKillCurrent) — so a stuck shell can be put down without
-// leaving it first.
-func (m *Model) showKillSessions() bool {
-	sessions, _ := m.st.ListByNamespace(m.ns)
-	if len(sessions) == 0 {
-		return false
-	}
-
-	items := make([]pickerItem, 0, len(sessions))
-
-	for _, s := range sessions {
-		item := pickerItem{
-			label:   m.sessionLabel(s),
-			text:    s.Name,
-			payload: killPayload{id: s.ID, name: s.Name},
-		}
-		if s.ID == m.curSessionID {
-			item.hint = currentHint
-		}
-
-		items = append(items, item)
-	}
-
-	m.mode = modePick
-	m.pickFor = pickKillSession
-	m.pick.setItems(items)
-
-	return true
-}
-
-// showClearSessions lists the sessions [clear history] can target, and reports
-// false when the namespace holds none, so the caller says so rather than
-// opening an empty picker. Like the kill chooser it keeps the session this tm
-// is running inside — marked "current" — since wiping the history of the
-// session you are in is the common case (a secret was just echoed there), and a
-// clear never disturbs what is on screen.
-func (m *Model) showClearSessions() bool {
-	sessions, _ := m.st.ListByNamespace(m.ns)
-	if len(sessions) == 0 {
-		return false
-	}
-
-	items := make([]pickerItem, 0, len(sessions))
-
-	for _, s := range sessions {
-		item := pickerItem{
-			label:   m.sessionLabel(s),
-			text:    s.Name,
-			payload: clearPayload{id: s.ID, name: s.Name},
-		}
-		if s.ID == m.curSessionID {
-			item.hint = currentHint
-		}
-
-		items = append(items, item)
-	}
-
-	m.mode = modePick
-	m.pickFor = pickClearHistory
-	m.pick.setItems(items)
-
-	return true
-}
-
-// showHistorySessions lists the sessions [history] can target, and reports false
-// when the namespace holds none, so the caller says so rather than opening an
-// empty picker. Like the clear chooser it keeps the session this tm is running
-// inside — marked "current" — since paging your own session's scrollback is a
-// common case, and viewing it in less disturbs nothing on screen (less restores
-// the terminal on quit).
-func (m *Model) showHistorySessions() bool {
-	sessions, _ := m.st.ListByNamespace(m.ns)
-	if len(sessions) == 0 {
-		return false
-	}
-
-	items := make([]pickerItem, 0, len(sessions))
-
-	for _, s := range sessions {
-		item := pickerItem{
-			label:   m.sessionLabel(s),
-			text:    s.Name,
-			payload: historyPayload{id: s.ID},
-		}
-		if s.ID == m.curSessionID {
-			item.hint = currentHint
-		}
-
-		items = append(items, item)
-	}
-
-	m.mode = modePick
-	m.pickFor = pickHistory
+	m.pickFor = p
 	m.pick.setItems(items)
 
 	return true
@@ -815,22 +712,9 @@ func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
 		if p, ok := it.payload.(menuPayload); ok {
 			return m.selectMenu(p)
 		}
-	case pickRenameSession:
-		if p, ok := it.payload.(renamePayload); ok {
-			m.pendingID, m.pendingName = p.id, p.name
-			m.enterInput(inputRenameSession, "Rename session:", p.name)
-		}
-	case pickKillSession:
-		if p, ok := it.payload.(killPayload); ok {
-			return m.killSession(p)
-		}
-	case pickClearHistory:
-		if p, ok := it.payload.(clearPayload); ok {
-			return m.clearHistory(p)
-		}
-	case pickHistory:
-		if p, ok := it.payload.(historyPayload); ok {
-			return m.viewHistory(p)
+	case pickRenameSession, pickKillSession, pickClearHistory, pickHistory:
+		if p, ok := it.payload.(sessPayload); ok {
+			return m.selectSession(p)
 		}
 	case pickUseNamespace:
 		return m.selectNamespace(it.payload)
@@ -838,6 +722,27 @@ func (m Model) selectPicked(it pickerItem) (tea.Model, tea.Cmd) {
 		if ns, ok := it.payload.(string); ok {
 			return m.dropNamespace(ns)
 		}
+	}
+
+	return m, nil
+}
+
+// selectSession carries out a pick from one of the session choosers (see
+// showSessions), dispatching on what that chooser was opened for: a rename opens
+// the name prompt prefilled with the current name, the rest act on the session.
+func (m Model) selectSession(p sessPayload) (tea.Model, tea.Cmd) {
+	switch m.pickFor {
+	case pickRenameSession:
+		m.pendingID, m.pendingName = p.id, p.name
+		m.enterInput(inputRenameSession, "Rename session:", p.name)
+	case pickKillSession:
+		return m.killSession(p)
+	case pickClearHistory:
+		return m.clearHistory(p)
+	case pickHistory:
+		return m.viewHistory(p)
+	case pickMenu, pickUseNamespace, pickDropNamespace:
+		// Not session choosers; selectPicked never routes them here.
 	}
 
 	return m, nil
@@ -859,12 +764,12 @@ func (m Model) selectNamespace(payload any) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// openChooser opens one of the session-target sub-pickers (rename, kill, clear,
-// history) via show, or sets emptyMsg as the status when the namespace holds no
-// sessions to act on — so the command says so rather than opening an empty
-// picker. show reports whether it opened a chooser (see showKillSessions et al).
-func (m *Model) openChooser(show func() bool, emptyMsg string) {
-	if !show() {
+// openChooser opens the session-target sub-picker for p (rename, kill, clear,
+// history — see showSessions), or sets emptyMsg as the status when the namespace
+// holds no sessions to act on, so the command says so rather than opening an
+// empty picker.
+func (m *Model) openChooser(p pickPurpose, emptyMsg string) {
+	if !m.showSessions(p) {
 		m.status = emptyMsg
 	}
 }
@@ -880,13 +785,13 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	case cmdRenameSession:
 		// Each of these opens a chooser to pick the session to act on first (a
 		// rename then prompts for the name), or notes there is nothing to pick.
-		m.openChooser(m.showRenameSessions, "no sessions to rename")
+		m.openChooser(pickRenameSession, "no sessions to rename")
 	case cmdKillSession:
-		m.openChooser(m.showKillSessions, "no sessions to kill")
+		m.openChooser(pickKillSession, "no sessions to kill")
 	case cmdClearHistory:
-		m.openChooser(m.showClearSessions, "no sessions to clear")
+		m.openChooser(pickClearHistory, "no sessions to clear")
 	case cmdHistory:
-		m.openChooser(m.showHistorySessions, "no sessions to view")
+		m.openChooser(pickHistory, "no sessions to view")
 	case cmdDetachSession:
 		// Detach from the current session back to the top-level menu (the session
 		// keeps running); app.Run carries that out. Reported as ActionDetach — not a
@@ -924,7 +829,7 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 // The session this menu is framed inside is the exception: killing it also ends
 // what this terminal is showing, so instead of killing inline the menu quits
 // with ActionKillCurrent and app.Run tears the relay down around the kill.
-func (m Model) killSession(p killPayload) (tea.Model, tea.Cmd) {
+func (m Model) killSession(p sessPayload) (tea.Model, tea.Cmd) {
 	if p.id == m.curSessionID {
 		m.result = Result{Action: ActionKillCurrent, ID: p.id}
 		m.quit = true
@@ -951,7 +856,7 @@ func (m Model) killSession(p killPayload) (tea.Model, tea.Cmd) {
 // clearing disturbs nothing on screen, so even the current session is handled
 // inline: the menu returns to the main list and the wipe is printed above it,
 // where it stays in the scrollback.
-func (m Model) clearHistory(p clearPayload) (tea.Model, tea.Cmd) {
+func (m Model) clearHistory(p sessPayload) (tea.Model, tea.Cmd) {
 	if err := m.ctrl.ClearHistory(p.id); err != nil {
 		m.status = "failed to clear history: " + err.Error()
 		m.showMenu()
@@ -968,7 +873,7 @@ func (m Model) clearHistory(p clearPayload) (tea.Model, tea.Cmd) {
 // chosen session's recorded scrollback log in less once the menu has torn down.
 // Like attach it does no work here: the pager takes over the whole terminal, so
 // it can only run after Bubble Tea has released it (see ActionHistory).
-func (m Model) viewHistory(p historyPayload) (tea.Model, tea.Cmd) {
+func (m Model) viewHistory(p sessPayload) (tea.Model, tea.Cmd) {
 	m.result = Result{Action: ActionHistory, ID: p.id}
 	m.quit = true
 
@@ -1331,7 +1236,6 @@ func (m Model) viewInput() string {
 }
 
 type theme struct {
-	title   lipgloss.Style
 	dim     lipgloss.Style
 	sel     lipgloss.Style
 	cmd     lipgloss.Style
@@ -1345,10 +1249,9 @@ type theme struct {
 // styles builds the lipgloss styles once, on first render.
 var styles = sync.OnceValue(func() theme {
 	return theme{
-		title: lipgloss.NewStyle().Bold(true),
-		dim:   lipgloss.NewStyle().Faint(true),
-		sel:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-		cmd:   lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
+		dim: lipgloss.NewStyle().Faint(true),
+		sel: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
+		cmd: lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
 		// A dimmer grey than cmd for the shortcut hints, so a key like "Ctrl-\"
 		// recedes behind its command label (see pickerDelegate.Render).
 		key:     lipgloss.NewStyle().Foreground(lipgloss.Color("240")),

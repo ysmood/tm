@@ -1,4 +1,4 @@
-package daemon_test
+package daemon
 
 import (
 	"bytes"
@@ -6,11 +6,10 @@ import (
 	"testing"
 
 	"github.com/ysmood/got"
-	"github.com/ysmood/tm/pkg/daemon"
 )
 
-func newSB(t *testing.T, g got.G) *daemon.Scrollback {
-	sb, err := daemon.NewScrollback(filepath.Join(t.TempDir(), "log"))
+func newSB(t *testing.T, g got.G) *scrollback {
+	sb, err := newScrollback(filepath.Join(t.TempDir(), "log"))
 	g.E(err)
 	g.Cleanup(func() { _ = sb.Close() })
 
@@ -56,19 +55,19 @@ func TestHistoryReadsBackTheLog(t *testing.T) {
 }
 
 // A session that has run for a long time only pays for the tail: History reads
-// at most daemon.TailBytes back, so the window it returns comes from the end of
+// at most tailBytes back, so the window it returns comes from the end of
 // the log, not the whole of it.
 func TestHistoryReadsBoundedTail(t *testing.T) {
 	g := got.T(t)
 	sb := newSB(t, g)
 
 	// One huge line (no newlines) longer than the tail bound, then a short line.
-	sb.Write(bytes.Repeat([]byte("x"), daemon.TailBytes+1000))
+	sb.Write(bytes.Repeat([]byte("x"), tailBytes+1000))
 	sb.Write([]byte("\ntail\n"))
 
 	hist := sb.History(24)
 	g.True(bytes.HasSuffix(hist, []byte("\ntail\n")))
-	g.Lte(len(hist), daemon.TailBytes)
+	g.Lte(len(hist), tailBytes)
 }
 
 // Clear truncates the log, so no later replay can show what came before; output

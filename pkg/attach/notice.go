@@ -36,8 +36,9 @@ func EnteredNotice(name string) []byte { return notice("[tm entered session ", n
 // SwitchedNotice is shown after the terminal switches to session name.
 func SwitchedNotice(name string) []byte { return notice("[tm switched to session ", name, "]") }
 
-// ExitedSessionNotice is shown when session name's shell exits.
-func ExitedSessionNotice(name string) []byte { return notice("[tm exited session ", name, "]") }
+// exitedSessionNotice is shown when session name's shell exits. Unexported: the
+// relay's own teardown is the only thing that reports it (see rawTerminal).
+func exitedSessionNotice(name string) []byte { return notice("[tm exited session ", name, "]") }
 
 // ExitedNotice is shown when tm leaves for the launching shell (the [exit]
 // command, or esc/Ctrl-C at the top level).

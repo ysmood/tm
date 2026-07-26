@@ -27,7 +27,9 @@ const (
 	MsgDetach
 	// MsgOutput carries raw terminal output from daemon to client.
 	MsgOutput
-	// MsgExit reports the shell's exit code; the session is over.
+	// MsgExit tells the attached client the session is over: its shell exited, so
+	// the daemon is tearing down. The client returns to tm's menu rather than
+	// reporting anything about how the shell ended, so there is no payload.
 	MsgExit
 	// MsgSwitch asks the daemon to hand its attached client (the relay) to another
 	// session, so a tm running inside this session can move the terminal there
@@ -151,25 +153,8 @@ func DecodeSwitchTarget(p []byte) (SwitchTarget, error) {
 	}, nil
 }
 
-// EncodeExit serializes an exit code for a MsgExit frame.
-func EncodeExit(code int32) []byte {
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, uint32(code))
-
-	return b
-}
-
-// DecodeExit parses a MsgExit payload.
-func DecodeExit(p []byte) (int32, error) {
-	if len(p) < 4 {
-		return 0, fmt.Errorf("proto: short exit payload: %d", len(p))
-	}
-
-	return int32(binary.BigEndian.Uint32(p)), nil
-}
-
-// WriteFrame writes one length-prefixed frame to w.
-func WriteFrame(w io.Writer, t MsgType, payload []byte) error {
+// writeFrame writes one length-prefixed frame to w.
+func writeFrame(w io.Writer, t MsgType, payload []byte) error {
 	if len(payload) > MaxPayload {
 		return fmt.Errorf("proto: payload too large: %d", len(payload))
 	}
@@ -192,8 +177,8 @@ func WriteFrame(w io.Writer, t MsgType, payload []byte) error {
 	return nil
 }
 
-// ReadFrame reads one length-prefixed frame from r.
-func ReadFrame(r io.Reader) (MsgType, []byte, error) {
+// readFrame reads one length-prefixed frame from r.
+func readFrame(r io.Reader) (MsgType, []byte, error) {
 	var hdr [5]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return 0, nil, err
@@ -231,11 +216,11 @@ func (c *Conn) Write(t MsgType, payload []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return WriteFrame(c.rw, t, payload)
+	return writeFrame(c.rw, t, payload)
 }
 
 // Read receives one frame.
-func (c *Conn) Read() (MsgType, []byte, error) { return ReadFrame(c.rw) }
+func (c *Conn) Read() (MsgType, []byte, error) { return readFrame(c.rw) }
 
 // Close closes the underlying connection.
 func (c *Conn) Close() error { return c.rw.Close() }

@@ -106,6 +106,13 @@ func (c *controller) DefaultSessionName(ns string) string {
 
 // CreateAndSpawn writes a new session record and starts its detached daemon.
 func (c *controller) CreateAndSpawn(ns, name string) (string, error) {
+	// The daemon runs this same tm binary, re-executed with the hidden __daemon
+	// subcommand (see Spawn).
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+
 	id, err := newID()
 	if err != nil {
 		return "", err
@@ -125,7 +132,7 @@ func (c *controller) CreateAndSpawn(ns, name string) (string, error) {
 		return "", err
 	}
 
-	if err := Spawn(c.st.Paths(), sess); err != nil {
+	if err := Spawn(exe, c.st.Paths(), sess); err != nil {
 		_ = c.st.DeleteSession(id)
 
 		return "", err
@@ -140,43 +147,48 @@ func (c *controller) CreateAndSpawn(ns, name string) (string, error) {
 // forever. A var so tests can shorten it.
 var killTimeout = 5 * time.Second
 
-// KillSession ends a session by asking its daemon to shut down, which kills the
-// shell and removes the session's files. It blocks (bounded by killTimeout)
-// until the daemon closes the connection — teardown is done — so the menu
-// rebuilds its list only after the session is gone. A session whose daemon
-// can't be asked at all falls back to killUnreachable.
-func (c *controller) KillSession(id string) error {
+// request sends one no-payload control request to a session's daemon and waits
+// for the daemon to close the connection — its acknowledgement that it has acted
+// — so the menu only carries on once the session is really gone (or really
+// cleared). The wait is bounded by killTimeout; act names the request in the
+// timeout message ("timed out waiting for the session to ..."). A daemon that
+// can't be asked at all — the dial or the write failed — falls back to
+// unreachable, which decides what to do from whether the session's process is
+// still there (see requireDead).
+//
+// On timeout nothing is undone: the daemon may still be mid-teardown, and if it
+// truly is wedged the session is at least still visible (and retryable) rather
+// than silently orphaned.
+func (c *controller) request(id string, mt proto.MsgType, act string, unreachable func(string) error) error {
 	nc, err := proto.Dial(proto.SockAddr(c.st.Paths(), id))
 	if err != nil {
-		return c.killUnreachable(id)
+		return unreachable(id)
 	}
 
 	defer func() { _ = nc.Close() }()
 
 	conn := proto.NewConn(nc)
-	if err := conn.Write(proto.MsgKill, nil); err != nil {
-		return c.killUnreachable(id)
+	if err := conn.Write(mt, nil); err != nil {
+		return unreachable(id)
 	}
 
-	// On timeout the record is left in place: the daemon may still be mid-teardown,
-	// and if it truly is wedged the session is at least still visible (and
-	// retryable) rather than silently orphaned.
 	_ = nc.SetReadDeadline(time.Now().Add(killTimeout))
 
 	if err := awaitClose(conn); errors.Is(err, os.ErrDeadlineExceeded) {
-		return errors.New("timed out waiting for the session to shut down")
+		return errors.New("timed out waiting for the session to " + act)
 	}
 
 	return nil
 }
 
-// killUnreachable handles killing a session whose daemon can't be asked to shut
-// down (the dial or the kill request failed). Only a session whose process is
-// gone is treated as dead and removed from the store — mirroring Reap — because
-// a live daemon can lose its socket file (e.g. to a /tmp cleaner pruning the
-// runtime dir) while it and its shell run on; deleting the record then would
-// orphan them untracked.
-func (c *controller) killUnreachable(id string) error {
+// requireDead reports an error unless the session's process is really gone. It
+// guards the fallbacks for a daemon that could not be asked: only a session whose
+// process has exited is treated as dead — mirroring Reap — because a live daemon
+// can lose its socket file (e.g. to a /tmp cleaner pruning the runtime dir) while
+// it and its shell run on, and acting behind its back would orphan the session
+// (deleting its record) or leave it half-cleared (truncating a log it is still
+// appending to).
+func (c *controller) requireDead(id string) error {
 	sess, err := c.st.GetSession(id)
 	if err != nil {
 		return err
@@ -184,6 +196,23 @@ func (c *controller) killUnreachable(id string) error {
 
 	if sessionLive(sess) {
 		return errors.New("session is alive but unreachable (pid " + strconv.Itoa(sess.PID) + ")")
+	}
+
+	return nil
+}
+
+// KillSession ends a session by asking its daemon to shut down, which kills the
+// shell and removes the session's files. It blocks until teardown is done, so the
+// menu rebuilds its list only after the session is gone.
+func (c *controller) KillSession(id string) error {
+	return c.request(id, proto.MsgKill, "shut down", c.killUnreachable)
+}
+
+// killUnreachable kills a session whose daemon can't be asked: a dead one is
+// simply removed from the store.
+func (c *controller) killUnreachable(id string) error {
+	if err := c.requireDead(id); err != nil {
+		return err
 	}
 
 	return c.st.DeleteSession(id)
@@ -192,45 +221,17 @@ func (c *controller) killUnreachable(id string) error {
 // ClearHistory wipes a session's recorded history by asking its daemon to
 // truncate the log file it records to, so nothing of the session's past (say, a
 // secret echoed to the terminal) survives on disk or can be replayed on a later
-// attach. The session keeps running. It blocks (bounded by killTimeout) until the
-// daemon closes the connection — the wipe is done. A session whose daemon can't
-// be asked at all falls back to clearUnreachable.
+// attach. The session keeps running.
 func (c *controller) ClearHistory(id string) error {
-	nc, err := proto.Dial(proto.SockAddr(c.st.Paths(), id))
-	if err != nil {
-		return c.clearUnreachable(id)
-	}
-
-	defer func() { _ = nc.Close() }()
-
-	conn := proto.NewConn(nc)
-	if err := conn.Write(proto.MsgClear, nil); err != nil {
-		return c.clearUnreachable(id)
-	}
-
-	_ = nc.SetReadDeadline(time.Now().Add(killTimeout))
-
-	if err := awaitClose(conn); errors.Is(err, os.ErrDeadlineExceeded) {
-		return errors.New("timed out waiting for the session to clear its history")
-	}
-
-	return nil
+	return c.request(id, proto.MsgClear, "clear its history", c.clearUnreachable)
 }
 
-// clearUnreachable handles clearing a session whose daemon can't be asked (the
-// dial or the clear request failed). A dead session's history is just its
-// leftover log file, so that is truncated directly — the record itself is left
-// for Reap. A live daemon that merely lost its socket keeps appending to that
-// file, so truncating it behind the daemon's back would leave the session
-// half-cleared; that is reported instead.
+// clearUnreachable clears a session whose daemon can't be asked. A dead
+// session's history is just its leftover log file, so that is truncated
+// directly — the record itself is left for Reap.
 func (c *controller) clearUnreachable(id string) error {
-	sess, err := c.st.GetSession(id)
-	if err != nil {
+	if err := c.requireDead(id); err != nil {
 		return err
-	}
-
-	if sessionLive(sess) {
-		return errors.New("session is alive but unreachable (pid " + strconv.Itoa(sess.PID) + ")")
 	}
 
 	if err := os.Truncate(c.st.Paths().LogFile(id), 0); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -278,24 +279,6 @@ func Run() error {
 	return runMenu(st, ctrl)
 }
 
-// runMenu owns the terminal for a tm launched from a plain shell, alternating
-// between the interactive menu and the relay. Picking a session attaches the
-// relay; pressing the menu key (Ctrl-\) inside the session returns here and
-// reopens the menu — framed as in-session — so esc resumes that session, picking
-// another switches to it, and [detach session] drops back to the top-level menu
-// with the session still running (esc there leaves tm). Exiting the session's
-// shell likewise ends the session and drops back to the top-level menu, so the
-// user can pick or start another session. A failed attach reaps the unreachable
-// session and reopens the menu with a note.
-//
-// The menu always acts only once it has fully torn down (the inline picker is
-// erased before the relay's output or a history replay takes over), so the menu
-// never runs the relay itself.
-//
-// It does no terminal reset on the way out: the menu renders inline (never the
-// alternate screen), so Bubble Tea's teardown leaves the terminal — and its
-// scrollback — sane, and the relay resets the terminal itself whenever it hands
-// it back.
 // pickTarget maps a menu result to the session the relay should (re)attach, or
 // reports leave=true (return to the launching shell) or toMenu=true (drop to the
 // top-level menu). curID is the session the menu was framed as running inside
@@ -351,6 +334,24 @@ func pickTarget(
 	return "", false, true, false
 }
 
+// runMenu owns the terminal for a tm launched from a plain shell, alternating
+// between the interactive menu and the relay. Picking a session attaches the
+// relay; pressing the menu key (Ctrl-\) inside the session returns here and
+// reopens the menu — framed as in-session — so esc resumes that session, picking
+// another switches to it, and [detach session] drops back to the top-level menu
+// with the session still running (esc there leaves tm). Exiting the session's
+// shell likewise ends the session and drops back to the top-level menu, so the
+// user can pick or start another session. A failed attach reaps the unreachable
+// session and reopens the menu with a note.
+//
+// The menu always acts only once it has fully torn down (the inline picker is
+// erased before the relay's output or a history replay takes over), so the menu
+// never runs the relay itself.
+//
+// It does no terminal reset on the way out: the menu renders inline (never the
+// alternate screen), so Bubble Tea's teardown leaves the terminal — and its
+// scrollback — sane, and the relay resets the terminal itself whenever it hands
+// it back.
 func runMenu(st *store.Store, ctrl *controller) error {
 	var (
 		status  string
@@ -517,7 +518,7 @@ func viewSessionHistory(p config.Paths, id string) string {
 // the terminal, and returns once the user quits the pager. It is how [history]
 // shows a session's past output — the std.log the daemon records — the way
 // `git show` opens its output in a pager. The daemon cooks that log to visible
-// text and color (see daemon.Scrollback), so it pages cleanly; the -R flag
+// text and color (the daemon cooks it as it records), so it pages cleanly; the -R flag
 // passes its ANSI color escapes through so the history renders in color rather
 // than as literal escape sequences.
 //

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/ysmood/tm/pkg/config"
@@ -17,19 +18,33 @@ import (
 // readyTimeout bounds how long a spawner waits for a daemon to start serving.
 const readyTimeout = 10 * time.Second
 
-// Spawn launches a detached daemon for sess using the current executable, and
-// returns once the daemon is serving (or an error if it fails to start).
-func Spawn(p config.Paths, sess store.Session) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
+// daemonEnv is the environment a spawned daemon runs with: this process's own,
+// with the storage locations pinned to p (see config.EnvHome, config.EnvRuntime).
+// The daemon resolves its paths from the environment, so it is told where this
+// store lives rather than left to inherit whatever the spawner happened to have —
+// a spawner whose p differs from its own environment (the tests, so they can run
+// in parallel) would otherwise start a daemon looking in the wrong place.
+func daemonEnv(p config.Paths) []string {
+	out := make([]string, 0, len(os.Environ())+2)
+
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, config.EnvHome+"=") || strings.HasPrefix(kv, config.EnvRuntime+"=") {
+			continue
+		}
+
+		out = append(out, kv)
 	}
 
-	return SpawnWith(self, p, sess)
+	return append(out, config.EnvHome+"="+p.Home, config.EnvRuntime+"="+p.Runtime)
 }
 
-// SpawnWith is Spawn with an explicit executable path (used by tests).
-func SpawnWith(exe string, p config.Paths, sess store.Session) error {
+// Spawn launches a detached daemon for sess by re-executing exe — tm's own binary
+// — and returns once that daemon is serving (or an error if it fails to start).
+//
+// The binary is a parameter rather than resolved here: the process doing the
+// spawning is not always the one the daemon should run. A test drives a built tm
+// from its own test binary, and os.Executable() there is the test.
+func Spawn(exe string, p config.Paths, sess store.Session) error {
 	if err := p.EnsureDirs(); err != nil {
 		return err
 	}
@@ -51,7 +66,7 @@ func SpawnWith(exe string, p config.Paths, sess store.Session) error {
 
 	cmd := exec.Command(exe, "__daemon", "--id", sess.ID)
 
-	cmd.Env = os.Environ() // inherit TM_HOME / TM_RUNTIME so paths agree
+	cmd.Env = daemonEnv(p)
 
 	if dirExists(sess.Cwd) {
 		cmd.Dir = sess.Cwd

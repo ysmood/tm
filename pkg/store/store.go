@@ -14,8 +14,10 @@ import (
 	"github.com/ysmood/tm/pkg/config"
 )
 
-// ErrNotFound is returned when a session id has no metadata file.
-var ErrNotFound = errors.New("session not found")
+// errNotFound is returned when a session id has no metadata file. Unexported: no
+// caller tells it apart from any other read failure — a session that cannot be read
+// is gone either way — so it is a message, not a contract.
+var errNotFound = errors.New("session not found")
 
 // Store reads and writes session/namespace state under a Paths root.
 type Store struct {
@@ -262,7 +264,7 @@ func readSession(path string) (Session, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Session{}, ErrNotFound
+			return Session{}, errNotFound
 		}
 
 		return Session{}, err

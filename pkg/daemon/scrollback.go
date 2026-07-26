@@ -6,42 +6,42 @@ import (
 	"sync"
 )
 
-// TailBytes bounds how much of the log file's end History reads to find the last
+// tailBytes bounds how much of the log file's end History reads to find the last
 // window of output. A window is one screen of lines, so this only has to be
 // comfortably more than a screenful of bytes — even a wide terminal's rows,
 // escape sequences and all, fit many times over. Reading a bounded tail (rather
 // than the whole file) keeps an attach cheap no matter how long the session has
 // been running.
-const TailBytes = 256 << 10 // 256 KiB
+const tailBytes = 256 << 10 // 256 KiB
 
-// Scrollback records a session's output to an append-only log file, which is the
+// scrollback records a session's output to an append-only log file, which is the
 // only place its history lives. Raw PTY output is cooked to its visible form
 // (see cooker) before being written, so the log holds clean text and color —
 // what a pager shows for [history], and what an attach replays — rather than the
 // raw control stream a terminal would act on. Only newline-terminated lines are
 // written; the in-progress line is held in the cooker and surfaced by History.
-type Scrollback struct {
+type scrollback struct {
 	mu   sync.Mutex
 	log  *os.File
 	cook cooker
 }
 
-// NewScrollback opens (creating it if needed) the log file the session appends
+// newScrollback opens (creating it if needed) the log file the session appends
 // its output to. It is opened for reading too, so History can read back the tail
 // it just wrote.
-func NewScrollback(logPath string) (*Scrollback, error) {
+func newScrollback(logPath string) (*scrollback, error) {
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Scrollback{log: f}, nil
+	return &scrollback{log: f}, nil
 }
 
 // Write cooks a chunk of raw output to its visible form and appends the lines it
 // completes to the log; the unfinished last line stays in the cooker until a
 // newline settles it (or History reads it as the live tail).
-func (s *Scrollback) Write(p []byte) {
+func (s *scrollback) Write(p []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -51,8 +51,8 @@ func (s *Scrollback) Write(p []byte) {
 }
 
 // History returns the last window of recorded output to replay on attach: the
-// final rows lines of the log file (see TailBytes for the read bound).
-func (s *Scrollback) History(rows int) []byte {
+// final rows lines of the log file (see tailBytes for the read bound).
+func (s *scrollback) History(rows int) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -66,7 +66,7 @@ func (s *Scrollback) History(rows int) []byte {
 	}
 
 	size := info.Size()
-	off := max(size-TailBytes, 0)
+	off := max(size-tailBytes, 0)
 
 	buf := make([]byte, size-off)
 	if _, err := s.log.ReadAt(buf, off); err != nil {
@@ -88,7 +88,7 @@ func (s *Scrollback) History(rows int) []byte {
 // at the new (zero) end — and the session keeps running; only its recorded past
 // is dropped, so nothing of it (say, a secret echoed to the terminal) can be
 // replayed on a later attach.
-func (s *Scrollback) Clear() error {
+func (s *scrollback) Clear() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -102,7 +102,7 @@ func (s *Scrollback) Clear() error {
 }
 
 // Close closes the log file.
-func (s *Scrollback) Close() error {
+func (s *scrollback) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

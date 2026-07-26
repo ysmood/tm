@@ -125,7 +125,7 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	g.True(waitFor(func() bool { return strings.Contains(out.String(), "ping") }, 5*time.Second))
 
 	// The menu key ends the relay and is sent as Detach, not as input.
-	_, err = inW.Write([]byte{DefaultMenuKey})
+	_, err = inW.Write([]byte{menuKey})
 	g.E(err)
 
 	select {
@@ -140,7 +140,7 @@ func TestRelayForwardsAndDetaches(t *testing.T) {
 	// The relay returning OutcomeMenu only means it wrote the Detach; the echo
 	// server reads it off the socket asynchronously, so wait rather than racing it.
 	g.True(waitFor(detached, 5*time.Second))
-	g.False(bytes.Contains([]byte(out.String()), []byte{DefaultMenuKey}))
+	g.False(bytes.Contains([]byte(out.String()), []byte{menuKey}))
 }
 
 // Ctrl-C is ordinary input: it is forwarded to the session (the shell's SIGINT)
@@ -177,7 +177,7 @@ func TestRelayForwardsCtrlC(t *testing.T) {
 	}, 5*time.Second))
 
 	// The relay is still up; the menu key ends it as usual.
-	_, err = inW.Write([]byte{DefaultMenuKey})
+	_, err = inW.Write([]byte{menuKey})
 	g.E(err)
 
 	select {
@@ -212,7 +212,7 @@ func exitServer(g got.G, addr string) {
 			return
 		}
 
-		_ = c.Write(proto.MsgExit, proto.EncodeExit(0))
+		_ = c.Write(proto.MsgExit, nil)
 	}()
 }
 
@@ -317,7 +317,7 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 	// Once the relay has re-attached to the target, its output must carry the
 	// terminal reset emitted on the way out of the first session.
 	g.True(waitFor(func() bool {
-		return strings.Contains(out.String(), string(TerminalRestore))
+		return strings.Contains(out.String(), string(fullRestore))
 	}, 5*time.Second))
 
 	// The reset must include leaving the alternate screen buffer and showing the
@@ -327,7 +327,7 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 	g.Has(o, "\x1b[?25h")
 
 	// The relay is now driving the target session; the menu key ends it cleanly.
-	_, err = inW.Write([]byte{DefaultMenuKey})
+	_, err = inW.Write([]byte{menuKey})
 	g.E(err)
 
 	select {
@@ -338,7 +338,9 @@ func TestRelayRestoresTerminalOnSwitch(t *testing.T) {
 		g.FailNow()
 	}
 
-	g.True(detached())
+	// The relay returning only means it wrote the Detach; the server reads it off
+	// the socket asynchronously, so wait rather than racing it.
+	g.True(waitFor(detached, 5*time.Second))
 }
 
 // The whole flow against a real daemon: attaching replays the session's last
@@ -385,7 +387,7 @@ func TestRelayReplaysWindowRealDaemon(t *testing.T) {
 
 	go func() {
 		oc, _, rerr := runRelay(Options{Replay: true}, inR, out, 0, false,
-			func(string) string { return d.Addr() }, sess.ID)
+			func(id string) string { return proto.SockAddr(p, id) }, sess.ID)
 		done <- relayExit{outcome: oc, err: rerr}
 	}()
 
@@ -399,7 +401,7 @@ func TestRelayReplaysWindowRealDaemon(t *testing.T) {
 	g.E(err)
 	g.True(waitFor(func() bool { return strings.Contains(out.String(), "relay-live") }, 10*time.Second))
 
-	_, err = inW.Write([]byte{DefaultMenuKey})
+	_, err = inW.Write([]byte{menuKey})
 	g.E(err)
 
 	res := <-done

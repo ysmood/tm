@@ -13,8 +13,8 @@ import (
 // renders against a real viewport (the unit tests otherwise never call View).
 func sized(g got.G, t *testing.T) Model {
 	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "s1", Name: "webserver", Namespace: store.DefaultNamespace}))
-	g.E(st.SaveSession(store.Session{ID: "s2", Name: "api", Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: "s1", Name: sessWeb, Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: "s2", Name: sessAPI, Namespace: store.DefaultNamespace}))
 
 	m := New(st, fakeCtrl{})
 
@@ -28,15 +28,15 @@ func TestPickerTypeToFilter(t *testing.T) {
 
 	v := m.View().Content
 	g.Has(v, "[new session]")
-	g.Has(v, "webserver")
+	g.Has(v, sessWeb)
 	// Sessions are listed ahead of the commands.
-	g.True(strings.Index(v, "webserver") < strings.Index(v, "[new session]"))
+	g.True(strings.Index(v, sessWeb) < strings.Index(v, "[new session]"))
 
 	// Typing filters live: the matching session stays, unrelated commands drop.
 	typed := typeStr(m, "web")
 	g.Eq(typed.pick.input.Value(), "web") // query captured by the textarea
 	filtered := typed.View().Content
-	g.Has(filtered, "webserver")
+	g.Has(filtered, sessWeb)
 	g.True(!strings.Contains(filtered, "[use namespace]"))
 
 	// A query that matches nothing shows the empty state.
@@ -51,10 +51,10 @@ func TestPickerKillChooserFilters(t *testing.T) {
 	m = typeStr(m, "kill")
 	m = send(m, keyEnterMsg) // [kill session] -> the session chooser
 	g.Eq(m.pickFor, pickKillSession)
-	g.Has(m.View().Content, "api")
+	g.Has(m.View().Content, sessAPI)
 
 	m = typeStr(m, "zzzz")
-	g.True(!strings.Contains(m.View().Content, "api"))
+	g.True(!strings.Contains(m.View().Content, sessAPI))
 }
 
 // ctrl+n / ctrl+p move the cursor like the arrow and ctrl+j / ctrl+k keys.

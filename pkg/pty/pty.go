@@ -68,15 +68,6 @@ func (t *PTY) Wait() error { return t.cmd.Wait() }
 // Close releases the pseudo-terminal, terminating the command.
 func (t *PTY) Close() error { return t.pty.Close() }
 
-// ExitCode returns the command's exit code, or -1 if it has not exited.
-func (t *PTY) ExitCode() int {
-	if t.cmd.ProcessState == nil {
-		return -1
-	}
-
-	return t.cmd.ProcessState.ExitCode()
-}
-
 // Signal sends sig to the underlying process (best-effort).
 func (t *PTY) Signal(sig os.Signal) error {
 	if t.cmd.Process == nil {

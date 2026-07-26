@@ -13,6 +13,20 @@ import (
 	"github.com/ysmood/tm/pkg/store"
 )
 
+// The fixtures these tests share. curID/curName are the session a menu is framed
+// inside (see Model.WithCurrentSession) — its id is what the menu hides from the
+// attach list and aims a kill or clear at, its name what the header shows. sessWeb
+// and sessAPI are background sessions, named so that fuzzy-filtering between them
+// is a realistic exercise of the picker. nsWork is a namespace other than the
+// default one.
+const (
+	curID   = "cur"
+	curName = "shell"
+	sessWeb = "webserver"
+	sessAPI = "api"
+	nsWork  = "work"
+)
+
 // fakeCtrl is a no-op Controller for driving the model in tests.
 type fakeCtrl struct{}
 
@@ -111,10 +125,10 @@ func TestModelShowsCurrentSession(t *testing.T) {
 func TestModelHidesCurrentSessionFromList(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: curID, Name: curName, Namespace: store.DefaultNamespace}))
 	g.E(st.SaveSession(store.Session{ID: "oth", Name: "other", Namespace: store.DefaultNamespace}))
 
-	m := New(st, sessCtrl{id: "cur", name: "current"})
+	m := New(st, sessCtrl{id: curID, name: curName})
 
 	g.Eq(sessionRows(m), 1) // only the other session, not the one we are in
 
@@ -127,7 +141,7 @@ func TestModelHidesCurrentSessionFromList(t *testing.T) {
 	}
 
 	g.True(has(labels, "other"))
-	g.True(!has(labels, "current"))
+	g.True(!has(labels, curName))
 }
 
 // Inside a session, picking another session resolves to a switch (hand the
@@ -138,7 +152,7 @@ func TestModelInSessionSwitchesInsteadOfNesting(t *testing.T) {
 	st := newStore(g, t)
 	g.E(st.SaveSession(store.Session{ID: "target", Name: "target", Namespace: store.DefaultNamespace}))
 
-	m := New(st, sessCtrl{name: "current"})
+	m := New(st, sessCtrl{name: curName})
 
 	// The cursor starts on the session: picking it resolves the menu in one press,
 	// with no history chooser in between.
@@ -356,7 +370,7 @@ func TestModelKillSession(t *testing.T) {
 	g.True(!m.quit) // killing never attaches or leaves the menu
 
 	_, err := st.GetSession("k1")
-	g.Is(err, store.ErrNotFound)
+	g.Err(err)
 	g.Eq(sessionRows(m), 0) // the rebuilt list no longer shows it
 
 	// The notice names the killed session; tea.Println carries it into the
@@ -380,10 +394,10 @@ func TestModelKillSession(t *testing.T) {
 func TestModelKillCurrentSession(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: curID, Name: curName, Namespace: store.DefaultNamespace}))
 	g.E(st.SaveSession(store.Session{ID: "oth", Name: "other", Namespace: store.DefaultNamespace}))
 
-	m := New(st, sessCtrl{id: "cur", name: "current"})
+	m := New(st, sessCtrl{id: curID, name: curName})
 	m = send(typeStr(m, "ks"), keyEnterMsg)
 
 	g.Eq(m.pickFor, pickKillSession)
@@ -392,30 +406,30 @@ func TestModelKillCurrentSession(t *testing.T) {
 	var curHint string
 
 	for _, it := range m.pick.all {
-		if p, ok := it.payload.(killPayload); ok && p.id == "cur" {
+		if p, ok := it.payload.(sessPayload); ok && p.id == curID {
 			curHint = it.hint
 		}
 	}
 
-	g.Eq(curHint, "current")
+	g.Eq(curHint, currentHint)
 
 	// Filter down to the current session and select it: the menu quits with
 	// ActionKillCurrent for app.Run to carry out — nothing is killed inline.
-	m = typeStr(m, "current")
+	m = typeStr(m, curName)
 
 	next, cmd := m.Update(keyEnterMsg)
 	final := next.(Model)
 
 	g.True(final.quit)
 	g.Eq(final.Result().Action, ActionKillCurrent)
-	g.Eq(final.Result().ID, "cur")
+	g.Eq(final.Result().ID, curID)
 	g.NotNil(cmd)
 
 	_, isQuit := cmd().(tea.QuitMsg)
 	g.True(isQuit)
 
 	// The store is untouched: the kill happens after the relay teardown.
-	_, err := st.GetSession("cur")
+	_, err := st.GetSession(curID)
 	g.E(err)
 }
 
@@ -430,9 +444,9 @@ func TestModelKillSessionNoSessions(t *testing.T) {
 	g.Has(m.headerTitle(), "no sessions to kill")
 
 	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: curID, Name: curName, Namespace: store.DefaultNamespace}))
 
-	in := send(typeStr(New(st, sessCtrl{id: "cur", name: "current"}), "ks"), keyEnterMsg)
+	in := send(typeStr(New(st, sessCtrl{id: curID, name: curName}), "ks"), keyEnterMsg)
 	g.Eq(in.pickFor, pickKillSession)
 	g.Len(in.pick.all, 1)
 }
@@ -536,11 +550,11 @@ func TestModelClearHistory(t *testing.T) {
 func TestModelClearHistoryCurrentSession(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: curID, Name: curName, Namespace: store.DefaultNamespace}))
 
 	var cleared []string
 
-	m := New(st, sessClearCtrl{sessCtrl: sessCtrl{id: "cur", name: "current"}, cleared: &cleared})
+	m := New(st, sessClearCtrl{sessCtrl: sessCtrl{id: curID, name: curName}, cleared: &cleared})
 	m = send(typeStr(m, "ch"), keyEnterMsg)
 
 	g.Eq(m.pickFor, pickClearHistory)
@@ -549,7 +563,7 @@ func TestModelClearHistoryCurrentSession(t *testing.T) {
 	var curHint string
 
 	for _, it := range m.pick.all {
-		if p, ok := it.payload.(clearPayload); ok && p.id == "cur" {
+		if p, ok := it.payload.(sessPayload); ok && p.id == curID {
 			curHint = it.hint
 		}
 	}
@@ -561,7 +575,7 @@ func TestModelClearHistoryCurrentSession(t *testing.T) {
 
 	g.True(!m.quit) // handled inline: nothing is torn down
 	g.Eq(m.pickFor, pickMenu)
-	g.Eq(cleared, []string{"cur"})
+	g.Eq(cleared, []string{curID})
 	g.NotNil(cmd)
 	g.Has(printedLine(cmd), "cleared history of session")
 }
@@ -626,16 +640,16 @@ func TestModelHistory(t *testing.T) {
 func TestModelHistoryCurrentSession(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "cur", Name: "current", Namespace: store.DefaultNamespace}))
+	g.E(st.SaveSession(store.Session{ID: curID, Name: curName, Namespace: store.DefaultNamespace}))
 
-	m := New(st, sessCtrl{id: "cur", name: "current"})
+	m := New(st, sessCtrl{id: curID, name: curName})
 	m = send(typeStr(m, "[history"), keyEnterMsg)
 
 	g.Eq(m.pickFor, pickHistory)
 	g.Len(m.pick.all, 1) // the current session is listed, marked
 
 	it := m.pick.all[0]
-	_, ok := it.payload.(historyPayload)
+	_, ok := it.payload.(sessPayload)
 	g.True(ok)
 	g.Eq(it.hint, currentHint)
 }
@@ -663,7 +677,7 @@ func mustGet(g got.G, st *store.Store, id string) store.Session {
 // tell "detach to the menu" apart from a plain esc, which resumes the session.
 func TestModelDetachSessionQuits(t *testing.T) {
 	g := got.T(t)
-	m := New(newStore(g, t), sessCtrl{id: "cur", name: "work"})
+	m := New(newStore(g, t), sessCtrl{id: curID, name: curName})
 
 	m = typeStr(m, "ds")
 	next, cmd := m.Update(keyEnterMsg)
@@ -685,7 +699,7 @@ func TestModelDetachHiddenAtTopLevel(t *testing.T) {
 	top := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
 	g.True(!strings.Contains(top.View().Content, "[detach session]"))
 
-	in := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	in := send(New(newStore(g, t), sessCtrl{id: curID, name: curName}), tea.WindowSizeMsg{Width: 80, Height: 24})
 	g.Has(in.View().Content, "[detach session]")
 }
 
@@ -759,7 +773,7 @@ func TestModelExitHintReactive(t *testing.T) {
 
 	// Opened over a session, esc and Ctrl-D resume, so [exit] shows no key hint.
 	inSess := send(
-		New(newStore(g, t), sessCtrl{id: "cur", name: "work"}),
+		New(newStore(g, t), sessCtrl{id: curID, name: curName}),
 		tea.WindowSizeMsg{Width: 80, Height: 24},
 	).View().Content
 	g.Has(inSess, "[exit]")
@@ -781,7 +795,7 @@ func TestModelCommandShortcuts(t *testing.T) {
 	g.Eq(top.Result().Action, ActionExit)
 
 	// Inside a session Ctrl-\ detaches (like selecting [detach session]).
-	detach := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), ctrlKey('\\'))
+	detach := send(New(newStore(g, t), sessCtrl{id: curID, name: curName}), ctrlKey('\\'))
 	g.True(detach.quit)
 	g.Eq(detach.Result().Action, ActionDetach)
 
@@ -824,7 +838,7 @@ func TestModelShortcutHintsRendered(t *testing.T) {
 	g.Has(v, "Ctrl-\\") // [exit] (top level: Ctrl-\, esc or Ctrl-D)
 	g.Has(v, "Ctrl-G")  // [use namespace]
 
-	in := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	in := send(New(newStore(g, t), sessCtrl{id: curID, name: curName}), tea.WindowSizeMsg{Width: 80, Height: 24})
 	g.Has(in.View().Content, "Ctrl-\\") // [detach session]
 }
 
@@ -835,7 +849,7 @@ func TestModelShortcutHintsRendered(t *testing.T) {
 func TestModelShortcutHintHighlightsOnFocus(t *testing.T) {
 	g := got.T(t)
 	th := styles()
-	m := send(New(newStore(g, t), sessCtrl{id: "cur", name: "work"}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	m := send(New(newStore(g, t), sessCtrl{id: curID, name: curName}), tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	// The cursor starts on [new session], so its Ctrl-T is highlighted while
 	// [detach session]'s Ctrl-\ stays dim.
@@ -882,22 +896,22 @@ func TestModelCreateNamespace(t *testing.T) {
 
 	// "work" matches no existing namespace, so the only row is "[new namespace]
 	// work"; select it to create and switch.
-	m = typeStr(m, "work")
+	m = typeStr(m, nsWork)
 	g.Has(m.View().Content, "[new namespace] work")
 
 	m = send(m, keyEnterMsg)
-	g.Eq(m.ns, "work")
+	g.Eq(m.ns, nsWork)
 
 	names, err := m.st.ListNamespaces()
 	g.E(err)
-	g.True(has(names, "work"))
+	g.True(has(names, nsWork))
 }
 
 // Typing "un" then choosing a namespace switches the active filter to it.
 func TestModelUseNamespace(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
-	g.E(st.CreateNamespace("work"))
+	g.E(st.CreateNamespace(nsWork))
 
 	m := New(st, fakeCtrl{})
 
@@ -910,18 +924,18 @@ func TestModelUseNamespace(t *testing.T) {
 	m = send(m, keyDownMsg)
 	m = send(m, keyDownMsg)
 	m = send(m, keyEnterMsg)
-	g.Eq(m.ns, "work")
+	g.Eq(m.ns, nsWork)
 }
 
 // Dropping a namespace reassigns its sessions to default and resets the view.
 func TestModelDropNamespace(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
-	g.E(st.CreateNamespace("work"))
-	g.E(st.SaveSession(store.Session{ID: "s1", Name: "s1", Namespace: "work"}))
+	g.E(st.CreateNamespace(nsWork))
+	g.E(st.SaveSession(store.Session{ID: "s1", Name: "s1", Namespace: nsWork}))
 
 	m := New(st, fakeCtrl{})
-	m.ns = "work"
+	m.ns = nsWork
 
 	m = typeStr(m, "dn")
 	m = send(m, keyEnterMsg) // select [drop namespace] -> namespace picker
@@ -942,11 +956,11 @@ func TestModelDropNamespace(t *testing.T) {
 func TestModelWithNamespace(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "w1", Name: "work-sess", Namespace: "work"}))
+	g.E(st.SaveSession(store.Session{ID: "w1", Name: "work-sess", Namespace: nsWork}))
 	g.E(st.SaveSession(store.Session{ID: "d1", Name: "def-sess", Namespace: store.DefaultNamespace}))
 
-	m := New(st, fakeCtrl{}).WithNamespace("work")
-	g.Eq(m.ns, "work")
+	m := New(st, fakeCtrl{}).WithNamespace(nsWork)
+	g.Eq(m.ns, nsWork)
 
 	m = send(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	v := m.View().Content
@@ -960,14 +974,14 @@ func TestModelWithNamespace(t *testing.T) {
 func TestModelWithCurrentSessionAdoptsNamespace(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
-	g.E(st.SaveSession(store.Session{ID: "w1", Name: "work-sess", Namespace: "work"}))
+	g.E(st.SaveSession(store.Session{ID: "w1", Name: "work-sess", Namespace: nsWork}))
 
 	m := New(st, fakeCtrl{})
 	g.Eq(m.ns, store.DefaultNamespace) // a plain top-level menu starts in default
 
 	m = m.WithCurrentSession("w1", "work-sess")
-	g.Eq(m.ns, "work")
+	g.Eq(m.ns, nsWork)
 
 	m = send(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	g.Has(m.headerTitle(), "work") // the namespace shown in the header follows the session
+	g.Has(m.headerTitle(), nsWork) // the namespace shown in the header follows the session
 }

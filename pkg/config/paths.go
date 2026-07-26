@@ -67,11 +67,12 @@ func (p Paths) SessionDir(id string) string {
 	return filepath.Join(p.Sessions(), id)
 }
 
-// Sock is the directory holding per-session unix sockets. It is Runtime when
+// sock is the directory holding per-session unix sockets. It is Runtime when
 // set, otherwise a "sock" subdirectory of Home as a fallback. Sockets stay out
 // of the session's own directory: their paths have a ~104-byte OS limit, which
-// a deep Home would blow past.
-func (p Paths) Sock() string {
+// a deep Home would blow past. Callers reach it through SockFile and ReadyFile
+// rather than joining paths themselves.
+func (p Paths) sock() string {
 	if p.Runtime != "" {
 		return p.Runtime
 	}
@@ -85,7 +86,7 @@ func (p Paths) SessionFile(id string) string {
 }
 
 // LogFile is the scrollback log path for a session id: the session's shell
-// output cooked to visible text and color (see daemon.Scrollback), and the only
+// output cooked to visible text and color by the daemon that records it, and the only
 // place its history lives.
 func (p Paths) LogFile(id string) string {
 	return filepath.Join(p.SessionDir(id), "std.log")
@@ -93,7 +94,7 @@ func (p Paths) LogFile(id string) string {
 
 // SockFile is the unix socket path for a session id (unix only).
 func (p Paths) SockFile(id string) string {
-	return filepath.Join(p.Sock(), id+".sock")
+	return filepath.Join(p.sock(), id+".sock")
 }
 
 // NamespaceFile is the marker file path for a namespace.
@@ -104,7 +105,7 @@ func (p Paths) NamespaceFile(name string) string {
 // ReadyFile is the marker a daemon writes once it is serving; the spawner polls
 // for it as a readiness handshake.
 func (p Paths) ReadyFile(id string) string {
-	return filepath.Join(p.Sock(), id+".ready")
+	return filepath.Join(p.sock(), id+".ready")
 }
 
 // DaemonLogFile captures a daemon process's own stdout/stderr for diagnostics
@@ -115,7 +116,7 @@ func (p Paths) DaemonLogFile(id string) string {
 
 // EnsureDirs creates Home and the directories shared by every session.
 func (p Paths) EnsureDirs() error {
-	for _, d := range []string{p.Sessions(), p.Namespaces(), p.Sock()} {
+	for _, d := range []string{p.Sessions(), p.Namespaces(), p.sock()} {
 		err := os.MkdirAll(d, 0o700)
 		if err != nil {
 			return err

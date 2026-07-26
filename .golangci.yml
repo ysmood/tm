@@ -10,6 +10,10 @@ linters:
     - gochecknoglobals
     - musttag
     - depguard # no import allow-list defined; would otherwise deny everything
+    # Superseded by their v2 successors, which `default: all` already enables;
+    # leaving these on only prints a deprecation warning on every run.
+    - gomodguard
+    - wsl
     # Stylistic linters that fight idiomatic Go / the got test framework:
     - varnamelen # short receiver/loop names (g, m, c, b) are idiomatic here
     - exhaustruct # not every struct literal should set every field

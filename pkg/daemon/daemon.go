@@ -41,7 +41,7 @@ type Daemon struct {
 	paths config.Paths
 	sess  store.Session
 	pty   *pty.PTY
-	sb    *Scrollback
+	sb    *scrollback
 	ln    net.Listener
 
 	mu     sync.Mutex
@@ -52,9 +52,8 @@ type Daemon struct {
 	// is still empty — any later output makes the replay non-empty again.
 	cleared bool
 
-	done     chan struct{}
-	once     sync.Once
-	exitCode int
+	done chan struct{}
+	once sync.Once
 }
 
 // Start opens the PTY running the session's shell and begins serving on the
@@ -72,7 +71,7 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 		return nil, err
 	}
 
-	sb, err := NewScrollback(p.LogFile(sess.ID))
+	sb, err := newScrollback(p.LogFile(sess.ID))
 	if err != nil {
 		return nil, err
 	}
@@ -111,18 +110,12 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 	return d, nil
 }
 
-// Addr is the socket address clients dial to attach.
-func (d *Daemon) Addr() string { return proto.SockAddr(d.paths, d.sess.ID) }
-
 // Wait blocks until the shell exits and cleanup has run.
 func (d *Daemon) Wait() error {
 	<-d.done
 
 	return nil
 }
-
-// ExitCode returns the shell's exit code (valid after Wait).
-func (d *Daemon) ExitCode() int { return d.exitCode }
 
 // Close forces the session to shut down, killing the shell outright. The kill
 // (see killShell) is needed on top of shutdown's PTY close: closing the PTY
@@ -133,7 +126,7 @@ func (d *Daemon) ExitCode() int { return d.exitCode }
 // outlive their shell (nohup and the like) still can.
 func (d *Daemon) Close() error {
 	killShell(d.pty)
-	d.shutdown(-1)
+	d.shutdown()
 
 	return nil
 }
@@ -165,7 +158,7 @@ func (d *Daemon) ptyLoop() {
 	}
 
 	_ = d.pty.Wait()
-	d.shutdown(d.pty.ExitCode())
+	d.shutdown()
 }
 
 func (d *Daemon) acceptLoop() {
@@ -305,7 +298,7 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 
 // replay sends the soft reset followed by the recorded window to c. A window is
 // one screen of lines — bounded well under proto.MaxPayload by the tail the
-// scrollback reads (see TailBytes) — so it goes out as a single frame, with no
+// scrollback reads (see tailBytes) — so it goes out as a single frame, with no
 // chunking or streaming to interrupt. It returns false if a write fails.
 func replay(c *proto.Conn, hist []byte) bool {
 	if len(hist) == 0 {
@@ -348,14 +341,13 @@ func (d *Daemon) serveInput(c *proto.Conn) {
 	}
 }
 
-// shutdown runs exactly once: notifies the client, closes resources, removes the
-// session's files, and unblocks Wait.
-func (d *Daemon) shutdown(code int) {
+// shutdown runs exactly once: tells the attached client the session is over,
+// closes resources, removes the session's files, and unblocks Wait.
+func (d *Daemon) shutdown() {
 	d.once.Do(func() {
-		d.exitCode = code
 		d.mu.Lock()
 		if d.client != nil {
-			_ = d.client.Write(proto.MsgExit, proto.EncodeExit(int32(code)))
+			_ = d.client.Write(proto.MsgExit, nil)
 			_ = d.client.Close()
 			d.client = nil
 		}

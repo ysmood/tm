@@ -73,11 +73,11 @@ func TestFilterMatchesSessions(t *testing.T) {
 	g := got.T(t)
 
 	items := append(paletteItems(),
-		pickerItem{label: "webserver", text: "webserver", payload: menuPayload{sess: store.Session{Name: "webserver"}}},
-		pickerItem{label: "api", text: "api", payload: menuPayload{sess: store.Session{Name: "api"}}},
+		pickerItem{label: sessWeb, text: sessWeb, payload: menuPayload{sess: store.Session{Name: sessWeb}}},
+		pickerItem{label: sessAPI, text: sessAPI, payload: menuPayload{sess: store.Session{Name: sessAPI}}},
 	)
 
 	order := rankItems(items, "web")
 	g.Gt(len(order), 0)
-	g.Eq(items[order[0]].label, "webserver")
+	g.Eq(items[order[0]].label, sessWeb)
 }

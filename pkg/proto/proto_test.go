@@ -1,32 +1,11 @@
 package proto_test
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/ysmood/got"
 	"github.com/ysmood/tm/pkg/proto"
 )
-
-func TestFrameRoundTrip(t *testing.T) {
-	g := got.T(t)
-
-	check := func(mt proto.MsgType, payload []byte) {
-		g.Helper()
-
-		var buf bytes.Buffer
-
-		g.E(proto.WriteFrame(&buf, mt, payload))
-		gotType, gotPayload, err := proto.ReadFrame(&buf)
-		g.E(err)
-		g.Eq(gotType, mt)
-		g.Eq(gotPayload, payload)
-	}
-
-	check(proto.MsgInput, []byte("hello"))
-	check(proto.MsgDetach, nil)
-	check(proto.MsgOutput, bytes.Repeat([]byte("x"), 70000))
-}
 
 func TestAttachRoundTrip(t *testing.T) {
 	g := got.T(t)
@@ -44,13 +23,6 @@ func TestResizeRoundTrip(t *testing.T) {
 	g.Eq(out, in)
 }
 
-func TestExitRoundTrip(t *testing.T) {
-	g := got.T(t)
-	out, err := proto.DecodeExit(proto.EncodeExit(-7))
-	g.E(err)
-	g.Eq(out, int32(-7))
-}
-
 func TestSwitchTargetRoundTrip(t *testing.T) {
 	g := got.T(t)
 
@@ -63,8 +35,8 @@ func TestSwitchTargetRoundTrip(t *testing.T) {
 	}
 
 	check(proto.SwitchTarget{ID: "abc123", Name: "my session"})
-	check(proto.SwitchTarget{ID: "abc123", Name: ""})  // no name
-	check(proto.SwitchTarget{ID: "", Name: "orphan"})  // no id
+	check(proto.SwitchTarget{ID: "abc123", Name: ""}) // no name
+	check(proto.SwitchTarget{ID: "", Name: "orphan"}) // no id
 }
 
 func TestDecodeShortPayloads(t *testing.T) {
@@ -73,19 +45,8 @@ func TestDecodeShortPayloads(t *testing.T) {
 	g.Err(err)
 	_, err = proto.DecodeResize([]byte{1})
 	g.Err(err)
-	_, err = proto.DecodeExit(nil)
-	g.Err(err)
 	_, err = proto.DecodeSwitchTarget([]byte{1}) // shorter than the 2-byte id-length header
 	g.Err(err)
 	_, err = proto.DecodeSwitchTarget([]byte{0, 9, 'a'}) // header promises 9 id bytes, 1 follows
-	g.Err(err)
-}
-
-func TestWriteFrameRejectsOversize(t *testing.T) {
-	g := got.T(t)
-
-	var buf bytes.Buffer
-
-	err := proto.WriteFrame(&buf, proto.MsgOutput, make([]byte, proto.MaxPayload+1))
 	g.Err(err)
 }

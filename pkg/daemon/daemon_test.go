@@ -61,9 +61,13 @@ func dialAttach(g got.G, addr string, att proto.Attach) (net.Conn, *proto.Conn) 
 	return nc, c
 }
 
+// readTimeout bounds every wait for a daemon's output. Generous, since the wait
+// ends as soon as the bytes arrive.
+const readTimeout = 10 * time.Second
+
 // readUntil reports whether Output containing want arrives before an Exit/timeout.
-func readUntil(nc net.Conn, c *proto.Conn, want string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
+func readUntil(nc net.Conn, c *proto.Conn, want string) bool {
+	deadline := time.Now().Add(readTimeout)
 
 	var acc strings.Builder
 
@@ -97,11 +101,11 @@ func TestAttachInputOutputAndExit(t *testing.T) {
 
 	defer d.Close()
 
-	nc, c := dialAttach(g, d.Addr(), proto.Attach{Cols: 80, Rows: 24})
+	nc, c := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
 	defer nc.Close()
 
 	g.E(c.Write(proto.MsgInput, []byte("echo hello-tm\n")))
-	found := readUntil(nc, c, "hello-tm", 10*time.Second)
+	found := readUntil(nc, c, "hello-tm")
 	g.True(found)
 
 	// Exiting the shell ends the session and removes its metadata.
@@ -109,7 +113,7 @@ func TestAttachInputOutputAndExit(t *testing.T) {
 	g.E(d.Wait())
 
 	_, gerr := st.GetSession(sess.ID)
-	g.Is(gerr, store.ErrNotFound)
+	g.Err(gerr)
 }
 
 // The daemon exports the session id to its shell as config.EnvSession, so a tm
@@ -123,14 +127,14 @@ func TestSessionShellHasSessionEnv(t *testing.T) {
 
 	defer d.Close()
 
-	nc, c := dialAttach(g, d.Addr(), proto.Attach{Cols: 80, Rows: 24})
+	nc, c := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
 	defer nc.Close()
 
 	// The expanded value (ENVMARK-envid-END) appears only in the command's output,
 	// not the terminal echo of the unexpanded command, so a match proves the shell
 	// saw the variable set.
 	g.E(c.Write(proto.MsgInput, []byte("echo ENVMARK-$"+config.EnvSession+"-END\n")))
-	g.True(readUntil(nc, c, "ENVMARK-envid-END", 10*time.Second))
+	g.True(readUntil(nc, c, "ENVMARK-envid-END"))
 }
 
 // A MsgSwitch connection tells the daemon to hand its attached client (the
@@ -145,16 +149,16 @@ func TestSwitchForwardedToClient(t *testing.T) {
 
 	defer d.Close()
 
-	nc, c := dialAttach(g, d.Addr(), proto.Attach{Cols: 80, Rows: 24})
+	nc, c := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
 	defer nc.Close()
 
 	// Make sure the client is fully registered and serving before switching, so
 	// the forward has a client to target.
 	g.E(c.Write(proto.MsgInput, []byte("echo ready-marker\n")))
-	g.True(readUntil(nc, c, "ready-marker", 10*time.Second))
+	g.True(readUntil(nc, c, "ready-marker"))
 
 	// A separate (non-attaching) connection requests the switch, then closes.
-	ctl, derr := proto.Dial(d.Addr())
+	ctl, derr := proto.Dial(proto.SockAddr(p, sess.ID))
 	g.E(derr)
 
 	cc := proto.NewConn(ctl)
@@ -182,17 +186,17 @@ func TestKillSession(t *testing.T) {
 
 	defer d.Close()
 
-	nc, c := dialAttach(g, d.Addr(), proto.Attach{Cols: 80, Rows: 24})
+	nc, c := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
 	defer nc.Close()
 
 	// Make sure the client is fully registered before the kill, so the MsgExit
 	// notification has a client to reach.
 	g.E(c.Write(proto.MsgInput, []byte("echo kill-ready\n")))
-	g.True(readUntil(nc, c, "kill-ready", 10*time.Second))
+	g.True(readUntil(nc, c, "kill-ready"))
 
 	// A separate (non-attaching) connection requests the kill, then blocks until
 	// the daemon closes it — the signal that teardown finished.
-	ctl, derr := proto.Dial(d.Addr())
+	ctl, derr := proto.Dial(proto.SockAddr(p, sess.ID))
 	g.E(derr)
 
 	defer ctl.Close()
@@ -200,7 +204,7 @@ func TestKillSession(t *testing.T) {
 	cc := proto.NewConn(ctl)
 	g.E(cc.Write(proto.MsgKill, nil))
 
-	_ = ctl.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = ctl.SetReadDeadline(time.Now().Add(readTimeout))
 	_, _, rerr := cc.Read()
 	g.Is(rerr, io.EOF) // not a timeout: the daemon closed after tearing down
 
@@ -211,7 +215,7 @@ func TestKillSession(t *testing.T) {
 
 	// And the session's metadata is gone.
 	_, gerr := st.GetSession(sess.ID)
-	g.Is(gerr, store.ErrNotFound)
+	g.Err(gerr)
 }
 
 // A MsgClear connection wipes the session's recorded history without attaching
@@ -235,19 +239,19 @@ func TestClearHistory(t *testing.T) {
 
 	defer d.Close()
 
-	nc, c := dialAttach(g, d.Addr(), proto.Attach{Cols: 80, Rows: 24})
+	nc, c := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
 	defer nc.Close()
 
 	// Produce live output; once it is read back it has been recorded (the daemon
 	// writes scrollback before forwarding to the client). Then let the session go
 	// quiet, so the wipe below lands after everything it printed is in the log.
 	g.E(c.Write(proto.MsgInput, []byte("echo LIVE-SECRET\n")))
-	g.True(readUntil(nc, c, "LIVE-SECRET", 10*time.Second))
+	g.True(readUntil(nc, c, "LIVE-SECRET"))
 	settle(nc, c)
 
 	// A separate (non-attaching) connection requests the clear, then blocks until
 	// the daemon closes it — the signal that the wipe finished.
-	ctl, derr := proto.Dial(d.Addr())
+	ctl, derr := proto.Dial(proto.SockAddr(p, sess.ID))
 	g.E(derr)
 
 	defer ctl.Close()
@@ -255,7 +259,7 @@ func TestClearHistory(t *testing.T) {
 	cc := proto.NewConn(ctl)
 	g.E(cc.Write(proto.MsgClear, nil))
 
-	_ = ctl.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = ctl.SetReadDeadline(time.Now().Add(readTimeout))
 	_, _, rerr := cc.Read()
 	g.Is(rerr, io.EOF) // not a timeout: the daemon closed after clearing
 
@@ -267,14 +271,14 @@ func TestClearHistory(t *testing.T) {
 
 	// A resume-style attach asked for no replay, so it gets no hint either: its
 	// replay is empty.
-	ncn, cn := dialAttach(g, d.Addr(), proto.Attach{Cols: 80, Rows: 24})
+	ncn, cn := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
 	defer ncn.Close()
 
 	g.Eq(readReplay(g, ncn, cn), "")
 
 	// A fresh full-history attach replays nothing of the past — only the dim
 	// hint explaining the blank history...
-	nc2, c2 := dialAttach(g, d.Addr(), proto.Attach{Replay: true, Cols: 80, Rows: 24})
+	nc2, c2 := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Replay: true, Cols: 80, Rows: 24})
 	defer nc2.Close()
 
 	hist := readReplay(g, nc2, c2)
@@ -284,12 +288,12 @@ func TestClearHistory(t *testing.T) {
 
 	// ...and the session survived the wipe: the shell still answers.
 	g.E(c2.Write(proto.MsgInput, []byte("echo still-alive\n")))
-	g.True(readUntil(nc2, c2, "still-alive", 10*time.Second))
+	g.True(readUntil(nc2, c2, "still-alive"))
 	settle(nc2, c2)
 
 	// With output recorded after the wipe there is real history to replay again,
 	// so the hint retires.
-	nc3, c3 := dialAttach(g, d.Addr(), proto.Attach{Replay: true, Cols: 80, Rows: 24})
+	nc3, c3 := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Replay: true, Cols: 80, Rows: 24})
 	defer nc3.Close()
 
 	hist = readReplay(g, nc3, c3)
@@ -306,7 +310,7 @@ const (
 	replayQuiet = 500 * time.Millisecond
 	// replayWait bounds a whole readReplay, so a daemon that never stops sending
 	// fails the test instead of hanging it.
-	replayWait = 10 * time.Second
+	replayWait = readTimeout
 )
 
 // readReplay accumulates an attach's replay: the Output frames that arrive
@@ -369,19 +373,19 @@ func TestAttachReplaysWindow(t *testing.T) {
 
 	defer d.Close()
 
-	nc, c := dialAttach(g, d.Addr(), proto.Attach{Replay: true, Cols: 80, Rows: 24})
+	nc, c := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Replay: true, Cols: 80, Rows: 24})
 	defer nc.Close()
 
 	g.Has(readReplay(g, nc, c), "SEEDED-HISTORY")
 
 	// The session is live after the replay: input echoes as ordinary output.
 	g.E(c.Write(proto.MsgInput, []byte("echo live-after-replay\n")))
-	g.True(readUntil(nc, c, "live-after-replay", 10*time.Second))
+	g.True(readUntil(nc, c, "live-after-replay"))
 	settle(nc, c)
 
 	// A resume-style attach gets no replay: its screen never went away, so
 	// redrawing the window would print a second copy of it.
-	nc2, c2 := dialAttach(g, d.Addr(), proto.Attach{Cols: 80, Rows: 24})
+	nc2, c2 := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
 	defer nc2.Close()
 
 	g.Eq(readReplay(g, nc2, c2), "")
@@ -416,7 +420,7 @@ func TestKillSessionStubbornShell(t *testing.T) {
 	pids := awaitPIDs(g, pidFile)
 	g.Len(pids, 2) // the shell and its sleep
 
-	ctl, derr := proto.Dial(d.Addr())
+	ctl, derr := proto.Dial(proto.SockAddr(p, sess.ID))
 	g.E(derr)
 
 	defer ctl.Close()
@@ -424,7 +428,7 @@ func TestKillSessionStubbornShell(t *testing.T) {
 	cc := proto.NewConn(ctl)
 	g.E(cc.Write(proto.MsgKill, nil))
 
-	_ = ctl.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = ctl.SetReadDeadline(time.Now().Add(readTimeout))
 	_, _, rerr := cc.Read()
 	g.Is(rerr, io.EOF) // teardown done
 
@@ -440,7 +444,7 @@ func TestKillSessionStubbornShell(t *testing.T) {
 // awaitPIDs polls for the pid file the stubborn shell writes at startup and
 // parses the space-separated pids in it.
 func awaitPIDs(g got.G, path string) []int {
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(readTimeout)
 
 	for {
 		if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
@@ -544,7 +548,7 @@ func TestAttachHugeLogReplaysOnlyTheWindow(t *testing.T) {
 
 	defer d.Close()
 
-	nc, c := dialAttach(g, d.Addr(), proto.Attach{Replay: true, Cols: 80, Rows: 24})
+	nc, c := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Replay: true, Cols: 80, Rows: 24})
 	defer nc.Close()
 
 	hist := readReplay(g, nc, c)
@@ -563,17 +567,17 @@ func TestDetachThenReattach(t *testing.T) {
 	defer d.Close()
 
 	// First attach: produce a marker, then detach.
-	nc1, c1 := dialAttach(g, d.Addr(), proto.Attach{Cols: 80, Rows: 24})
+	nc1, c1 := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
 	g.E(c1.Write(proto.MsgInput, []byte("echo first-attach\n")))
-	found := readUntil(nc1, c1, "first-attach", 10*time.Second)
+	found := readUntil(nc1, c1, "first-attach")
 	g.True(found)
 	g.E(c1.Write(proto.MsgDetach, nil))
 	nc1.Close()
 
 	// Session still alive: reattach with full history and see the earlier marker.
-	nc2, c2 := dialAttach(g, d.Addr(), proto.Attach{Replay: true, Cols: 80, Rows: 24})
+	nc2, c2 := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Replay: true, Cols: 80, Rows: 24})
 	defer nc2.Close()
 
-	found = readUntil(nc2, c2, "first-attach", 10*time.Second)
+	found = readUntil(nc2, c2, "first-attach")
 	g.True(found)
 }

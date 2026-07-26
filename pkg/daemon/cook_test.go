@@ -201,6 +201,7 @@ func TestCookBytewiseMatchesWhole(t *testing.T) {
 		"%     \r$ last"
 
 	var whole cooker
+
 	want := string(whole.cook([]byte(in))) + string(whole.tail())
 
 	var oneByte cooker
@@ -210,7 +211,7 @@ func TestCookBytewiseMatchesWhole(t *testing.T) {
 		got.Write(oneByte.cook([]byte(in[i : i+1])))
 	}
 
-	got.WriteString(string(oneByte.tail()))
+	got.Write(oneByte.tail())
 
 	g.Eq(got.String(), want)
 }
@@ -235,7 +236,7 @@ func TestCookBoundsLineWithoutNewline(t *testing.T) {
 			Lte(len(c.cells), maxLineWidth)
 	}
 
-	out.WriteString(string(c.tail()))
+	out.Write(c.tail())
 
 	// Every character is preserved; the buffer was bounded only by inserting
 	// soft-wrap newlines (two, for two full widths).

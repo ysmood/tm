@@ -18,11 +18,15 @@ import (
 	"golang.org/x/term"
 )
 
-// DefaultMenuKey is Ctrl-\ (0x1c): pressing it stops proxying and returns to tm
-// so it can open the interactive menu (switch sessions, start a new one, or leave
-// tm for the shell). The session keeps running in the background while the menu is
-// up. Run reports the press to its caller, which reopens the menu and re-attaches.
-const DefaultMenuKey = 0x1c
+// menuKey is Ctrl-\ (0x1c): pressing it stops proxying and returns to tm so it
+// can open the interactive menu (switch sessions, start a new one, or leave tm for
+// the shell). The session keeps running in the background while the menu is up.
+// Run reports the press to its caller, which reopens the menu and re-attaches.
+//
+// It is fixed rather than configurable: the key is part of tm's interface, named
+// in the menu's own help and in the README, and one relay's idea of it must match
+// what every other part of tm tells the user to press.
+const menuKey = 0x1c
 
 // Leaving a session returns the local terminal to a sane baseline. A session's
 // PTY has its own terminal state, independent of the outer terminal's: a
@@ -67,18 +71,21 @@ const (
 		"\x1b[m" // reset SGR colors / attributes
 )
 
-// TerminalModesReset is the scrollback-preserving reset: it undoes a session's
-// terminal modes without leaving the alternate screen, so detaching or exiting at
-// a shell prompt keeps the terminal's scrollback intact.
-var TerminalModesReset = []byte(terminalModesReset)
+// modesReset is the scrollback-preserving reset: it undoes a session's terminal
+// modes without leaving the alternate screen, so detaching or exiting at a shell
+// prompt keeps the terminal's scrollback intact.
+var modesReset = []byte(terminalModesReset)
 
-// TerminalRestore is the full reset for when the session left the terminal in the
-// alternate screen: leave the alt screen (restoring the main screen + scrollback),
-// then reset the modes. Used where the screen is redrawn next (a session switch)
-// or where a full-screen app was up when leaving.
-var TerminalRestore = []byte(altScreenExit + terminalModesReset)
+// fullRestore is the reset for when the session left the terminal in the alternate
+// screen: leave the alt screen (restoring the main screen + scrollback), then reset
+// the modes. Used where the screen is redrawn next (a session switch) or where a
+// full-screen app was up when leaving.
+//
+// Both are reached through RestoreFor, which is what callers outside this package
+// use — picking between them is this package's job, not theirs.
+var fullRestore = []byte(altScreenExit + terminalModesReset)
 
-// SwitchReset is TerminalRestore plus a carriage return, written before re-attaching
+// SwitchReset is fullRestore plus a carriage return, written before re-attaching
 // to a switch target. The target's history replay is a raw byte stream with no
 // absolute positioning, so it must start from column 0 to line up with how it was
 // recorded. The reset leaves the cursor wherever the leaving session's prompt sat —
@@ -96,10 +103,10 @@ var SwitchReset = []byte(altScreenExit + terminalModesReset + "\r")
 // scrollback-preserving modes-only reset.
 func RestoreFor(inAltScreen bool) []byte {
 	if inAltScreen {
-		return TerminalRestore
+		return fullRestore
 	}
 
-	return TerminalModesReset
+	return modesReset
 }
 
 // Options configures an attach session.
@@ -107,8 +114,7 @@ type Options struct {
 	// Replay asks the daemon to redraw the session's last window of output before
 	// the live stream. It is what an attach or a switch wants; resuming a session
 	// the terminal is still showing leaves it off.
-	Replay  bool
-	MenuKey byte
+	Replay bool
 	// Name is the display name of the session first attached to, used for the
 	// status notice printed if that session's shell exits. It is empty when the
 	// name is unknown (e.g. the bare __attach relay), which suppresses the notice.
@@ -177,8 +183,6 @@ func cancelInput(f *os.File) (io.Reader, func()) {
 // input reader forwards keystrokes to whichever session is current, so switching
 // sessions never leaves a second reader competing for the terminal's input.
 type relay struct {
-	menuKey byte
-
 	ready     chan struct{} // closed once the first session connection is set
 	readyOnce sync.Once
 
@@ -198,6 +202,12 @@ type relay struct {
 	// split across two chunks is still recognized. Only touched by pumpOutput, which
 	// runs one chunk at a time, so it needs no lock.
 	altCarry []byte
+	// altScan splices altCarry onto the current chunk so a toggle straddling the
+	// boundary is scanned as one run. It is its own buffer rather than an append
+	// onto altCarry, so the scanned bytes never share altCarry's array with the
+	// carry it is about to be refilled from, and it is reused across chunks so the
+	// stitch costs no allocation in steady state.
+	altScan []byte
 
 	mu   sync.Mutex
 	conn *proto.Conn // the session connection input is currently forwarded to
@@ -227,11 +237,7 @@ func runRelay(
 	opt Options, in io.Reader, out io.Writer, inFd int, raw bool,
 	addrOf func(string) string, id string,
 ) (outcome Outcome, leftAlt bool, err error) {
-	if opt.MenuKey == 0 {
-		opt.MenuKey = DefaultMenuKey
-	}
-
-	r := &relay{menuKey: opt.MenuKey, ready: make(chan struct{})}
+	r := &relay{ready: make(chan struct{})}
 
 	// curName tracks the session the relay is currently on (updated as it switches
 	// internally), so the exit notice below names the right session.
@@ -306,7 +312,7 @@ func rawTerminal(inFd int) (func(out io.Writer, outcome Outcome, curName string,
 		}
 
 		if outcome == OutcomeSessionExited && curName != "" {
-			_, _ = out.Write(ExitedSessionNotice(curName))
+			_, _ = out.Write(exitedSessionNotice(curName))
 		}
 
 		_ = term.Restore(inFd, old)
@@ -453,12 +459,14 @@ const maxAltSeq = 8 // len("\x1b[?1049h"), the longest tracked toggle
 
 // trackAlt updates r.alt from a forwarded output chunk by finding the last
 // alternate-screen toggle in it; the most recent toggle wins. altCarry stitches the
-// previous chunk's tail onto this one so a toggle split across the boundary is still
-// seen. resetAlt clears both at the start of each session.
+// previous chunk's tail onto this one (via altScan) so a toggle split across the
+// boundary is still seen. resetAlt clears the tracking at the start of each session.
 func (r *relay) trackAlt(payload []byte) {
 	data := payload
+
 	if len(r.altCarry) > 0 {
-		data = append(r.altCarry, payload...)
+		r.altScan = append(append(r.altScan[:0], r.altCarry...), payload...)
+		data = r.altScan
 	}
 
 	lastIdx, lastOn := -1, false
@@ -527,7 +535,7 @@ func (r *relay) inputLoop(in io.Reader, ended <-chan struct{}, onEnd func()) {
 // the ended-channel reader sees it. It reports whether the input loop should
 // stop.
 func (r *relay) forwardInput(data []byte) (stop bool) {
-	i := bytes.IndexByte(data, r.menuKey)
+	i := bytes.IndexByte(data, menuKey)
 	if i < 0 {
 		r.sendInput(data)
 

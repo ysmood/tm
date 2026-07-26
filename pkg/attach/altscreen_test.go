@@ -22,7 +22,7 @@ func TestRestoreFor(t *testing.T) {
 
 	altScreen := RestoreFor(true)
 	g.True(bytes.Contains(altScreen, []byte(altScreenExit))) // leaves the alt screen
-	g.Eq(string(altScreen), string(TerminalRestore))
+	g.Eq(string(altScreen), string(fullRestore))
 }
 
 // TestSwitchResetReturnsToColumnZero pins the switch-vs-leave asymmetry: switching
@@ -40,8 +40,8 @@ func TestSwitchResetReturnsToColumnZero(t *testing.T) {
 	g.True(bytes.Contains(SwitchReset, []byte(altScreenExit))) // and still leaves the alt screen
 
 	// Leaving to the menu / shell must not shift the cursor at all.
-	g.False(bytes.Contains(TerminalModesReset, []byte("\r")))
-	g.False(bytes.HasSuffix(TerminalRestore, []byte("\r")))
+	g.False(bytes.Contains(modesReset, []byte("\r")))
+	g.False(bytes.HasSuffix(fullRestore, []byte("\r")))
 	g.False(bytes.HasSuffix(RestoreFor(false), []byte("\r")))
 	g.False(bytes.HasSuffix(RestoreFor(true), []byte("\r")))
 }

@@ -4,137 +4,15 @@ package app_test
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"strings"
-	"testing"
-	"time"
 	"unicode/utf8"
-
-	gopty "github.com/aymanbagabas/go-pty"
-	"github.com/ysmood/got"
-	"github.com/ysmood/tm/pkg/app"
-	"github.com/ysmood/tm/pkg/config"
-	"github.com/ysmood/tm/pkg/store"
 )
 
-// TestInlineMenuClearsLikeFzf drives the real binary: while attached to a
-// session, running tm shows the picker inline — without the alternate screen —
-// so the session's existing output stays on screen. On a switch the picker is
-// then erased (like fzf clearing its prompt) and the target session's history
-// replays in its place, rather than the screen being blanked or the picker left
-// stranded above the output.
-func TestInlineMenuClearsLikeFzf(t *testing.T) {
-	g := got.T(t)
-	g.PanicAfter(150 * time.Second)
-
-	rt, err := os.MkdirTemp("/tmp", "tminline")
-	g.E(err)
-	g.Cleanup(func() { _ = os.RemoveAll(rt) })
-	g.Setenv("TM_HOME", t.TempDir())
-	g.Setenv("TM_RUNTIME", rt)
-	killLeftoverDaemons(g)
-
-	bin := buildTM(g, t)
-
-	p, err := config.New()
-	g.E(err)
-	g.E(p.EnsureDirs())
-	st := store.New(p)
-
-	for _, id := range []string{"aaa", "bbb"} {
-		sess := store.Session{
-			ID: id, Name: id, Namespace: store.DefaultNamespace,
-			Shell: "/bin/sh", CreatedAt: time.Unix(1, 0),
-		}
-		g.E(st.SaveSession(sess))
-		g.E(app.SpawnWith(bin, p, sess))
-	}
-
-	// Give bbb a distinctive history line, then leave it.
-	bp, err := gopty.New()
-	g.E(err)
-	g.E(bp.Resize(120, 40))
-
-	bc := bp.Command(bin, "__attach", "--id", "bbb")
-	bc.Env = os.Environ()
-	g.E(bc.Start())
-
-	bBuf := &safeBuilder{}
-	go func() { _, _ = io.Copy(bBuf, bp) }()
-
-	time.Sleep(600 * time.Millisecond)
-
-	_, err = bp.Write([]byte("echo BBB-HISTORY-MARK\r"))
-	g.E(err)
-	g.True(waitForText(bBuf, "BBB-HISTORY-MARK", 10*time.Second))
-
-	_, err = bp.Write([]byte{0x1c})
-	g.E(err)
-	g.E(bc.Wait())
-
-	_ = bp.Close()
-
-	// Attach to aaa and print a marker we expect to stay on screen.
-	pt, err := gopty.New()
-	g.E(err)
-	g.E(pt.Resize(120, 40))
-	g.Cleanup(func() { _ = pt.Close() })
-
-	c := pt.Command(bin, "__attach", "--id", "aaa")
-	c.Env = os.Environ()
-	g.E(c.Start())
-
-	buf := &safeBuilder{}
-	go func() { _, _ = io.Copy(buf, pt) }()
-
-	time.Sleep(800 * time.Millisecond)
-
-	_, err = pt.Write([]byte("echo AAA-VISIBLE-MARK\r"))
-	g.E(err)
-	g.True(waitForText(buf, "AAA-VISIBLE-MARK", 10*time.Second))
-
-	mark := len(buf.String())
-
-	// Run tm inside aaa: the menu must appear without switching to the alt screen.
-	_, err = pt.Write([]byte(bin + "\r"))
-	g.E(err)
-	g.True(waitForText(buf, "[new session]", 10*time.Second))
-
-	menuOut := buf.String()[mark:]
-	g.Desc("inner menu must not enter the alternate screen: %q", menuOut).
-		False(strings.Contains(menuOut, "\x1b[?1049h"))
-
-	// Pick bbb with all history -> in-place switch.
-	_, err = pt.Write([]byte("bbb\r"))
-	g.E(err)
-	time.Sleep(400 * time.Millisecond)
-
-	_, err = pt.Write([]byte("\r")) // "All history"
-	g.E(err)
-	time.Sleep(1500 * time.Millisecond)
-
-	// Render the whole stream through a terminal model and inspect what the user
-	// would actually see (visible screen plus scrollback).
-	v := newVT(40, 120)
-	v.feed([]byte(buf.String()))
-	screen := v.visible()
-
-	g.Desc("the pre-menu output must still be on screen: %q", screen).
-		True(strings.Contains(screen, "AAA-VISIBLE-MARK"))
-	g.Desc("the target session history must replay: %q", screen).
-		True(strings.Contains(screen, "BBB-HISTORY-MARK"))
-	g.Desc("the picker must be erased, not left on screen: %q", screen).
-		False(strings.Contains(screen, "[new session]"))
-
-	_, err = pt.Write([]byte{0x1c})
-	g.E(err)
-
-	_ = c.Wait()
-}
-
 // vt is a minimal terminal model: enough to track the main-screen scrollback and
-// visible grid so a test can assert what the user can actually see.
+// visible grid so a test can assert what the user can actually see. The tests feed
+// it everything tm wrote to a PTY (see term.screen) and then read the resulting
+// screen, which is the only way to tell "drawn below the prompt" from "drew over
+// it" — both are the same bytes until a terminal interprets them.
 type vt struct {
 	rows, cols     int
 	cur            [][]rune
@@ -374,17 +252,17 @@ func (v *vt) eraseDisplay(mode int) {
 	}
 }
 
+// visible is the scrollback plus the current screen: everything the user could
+// scroll back to see.
 func (v *vt) visible() string {
 	var b strings.Builder
+
 	for _, l := range v.scroll {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
 
-	for _, row := range v.cur {
-		b.WriteString(v.line(row))
-		b.WriteString("\n")
-	}
+	b.WriteString(v.screen())
 
 	return b.String()
 }
@@ -393,6 +271,7 @@ func (v *vt) visible() string {
 // visible right now — used to catch content being erased off the current screen.
 func (v *vt) screen() string {
 	var b strings.Builder
+
 	for _, row := range v.cur {
 		b.WriteString(v.line(row))
 		b.WriteString("\n")
@@ -400,3 +279,7 @@ func (v *vt) screen() string {
 
 	return b.String()
 }
+
+// cursorLine is the line the cursor is sitting on, so a test can check the
+// resumed session put it back on the shell's prompt.
+func (v *vt) cursorLine() string { return v.line(v.cur[v.cr]) }

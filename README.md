@@ -24,6 +24,7 @@ tm will use vscode like [fuzzy search](https://github.com/sahilm/fuzzy) to help 
 ### Create a new session
 
 The command is `[new session]`. You just type words like, `new` `ns`, `[n`, `[ns`, etc. and hit enter.
+`Ctrl-T` runs it straight from the menu, without filtering to it first.
 
 This command will create a new shell session. It will auto generate a default name for the session, you can change it before entering the session.
 
@@ -45,6 +46,10 @@ the exception: it lives under `/tmp`, since socket paths have a short OS length 
 
 There is also no client-server like tmux: each session runs as its own independent background
 process, so there is no shared server that can die and take all your sessions with it.
+
+The socket directory defaults to `/tmp/tm-<uid>` and can be moved with the `TM_RUNTIME`
+environment variable (say, onto a per-user runtime tmpfs). Every `tm` that talks to a session
+must resolve it to the same path, so set it in a shared profile rather than per command.
 
 ### Rename a session
 
@@ -140,6 +145,7 @@ again to pick a session back up.
 ### Use namespace
 
 The command is `[use namespace]`. You just type words like `namespace`, `un`, `[n`, etc. and hit enter.
+`Ctrl-G` runs it straight from the menu.
 
 A namespace is a way to group sessions together. When you enter tm, it uses a namespace called `default`,
 and you only see sessions under your current namespace. Pick a namespace from the list to switch to it,
@@ -155,3 +161,14 @@ Set the `TM_NAMESPACE` environment variable to choose the namespace tm opens in
 ### Drop namespace
 
 The command is `[drop namespace]`. You just type words like `drop`, `dn`, `[d`, etc. and hit enter.
+
+Pick the namespace to remove. Its sessions are not touched — they keep running and move to the
+`default` namespace, so nothing is lost by dropping the group they were grouped under. The
+`default` namespace itself can't be dropped, so it is not offered.
+
+### Show the help
+
+The command is `[help]`. You just type words like `help`, `[h`, etc. and hit enter.
+
+It lists every key and every command with a one-line description — the same reference as this
+section of the README, without leaving the menu. Any key returns to the menu.

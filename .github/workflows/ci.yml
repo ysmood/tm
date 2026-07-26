@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # tm drives real PTYs, shells and unix sockets, so the tests run on both
+    # platforms it supports rather than on one and hoping.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      # The end-to-end tests spawn detached daemons and watch what they draw, so a
+      # hang is a plausible failure mode; the timeout keeps it from burning an hour.
+      - run: go test -race -timeout 10m ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # The same pinned version AGENTS.md tells contributors to run locally, so CI
+      # and a local run agree on what passes.
+      - run: go run github.com/ysmood/golangci-lint@latest -v 2.12.2
