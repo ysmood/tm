@@ -557,6 +557,94 @@ func TestAttachHugeLogReplaysOnlyTheWindow(t *testing.T) {
 	g.Lte(len(hist), proto.MaxPayload)
 }
 
+// Re-attaching into a session that is inside a full-screen app must hand the
+// terminal back to the app, not leave it on the main screen where the app's
+// incremental updates would paint garbage over the replayed history. The
+// replay must land the main-screen history first, then re-enter the alt
+// screen with the app's modes (hidden cursor, mouse reporting), and the
+// daemon must then make the app itself repaint — its screen content is
+// deliberately not recorded — by delivering real size-change signals even
+// though the attach size is unchanged (the repaint nudge).
+func TestReattachRestoresFullScreenApp(t *testing.T) {
+	g, st, p := setupDaemon(t)
+	sess := makeSession(g, st, "altapp")
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	nc1, c1 := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
+
+	// Leave a marker in the main-screen history first.
+	g.E(c1.Write(proto.MsgInput, []byte("echo HISTORY-MARK\n")))
+	g.True(readUntil(nc1, c1, "HISTORY-MARK"))
+
+	// A fake full-screen app: it enters the alt screen, hides the cursor, turns
+	// on mouse reporting, and "repaints" whenever the window size changes. It
+	// must run as its own foreground job (a script, not shell-prompt commands):
+	// SIGWINCH goes to the PTY's foreground process group, which is where a real
+	// TUI lives — a trap set in the interactive shell itself would never see it.
+	// The repaint marker is emitted in two halves so no tty echo of the script's
+	// text can ever match it.
+	dir := t.TempDir()
+	app := filepath.Join(dir, "fakeapp.sh")
+	g.E(os.WriteFile(app, []byte("#!/bin/sh\n"+
+		"printf '\\033[?1049h\\033[?25l\\033[?1002h\\033[?1006h'\n"+
+		"trap 'printf RE; printf PAINTED' WINCH\n"+
+		"while :; do sleep 1; done\n"), 0o700))
+
+	g.E(c1.Write(proto.MsgInput, []byte(app+"\n")))
+	g.True(readUntil(nc1, c1, "\x1b[?1049h")) // the app is up (raw toggle, not its echo)
+	settle(nc1, c1)
+
+	g.E(c1.Write(proto.MsgDetach, nil))
+	nc1.Close()
+
+	// Re-attach at the same size, so no natural SIGWINCH fires and only the
+	// nudge can make the app repaint.
+	nc2, c2 := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Replay: true, Cols: 80, Rows: 24})
+	defer nc2.Close()
+
+	stream := readStreamUntil(nc2, c2, "REPAINTED")
+
+	// History, then the alt-screen re-entry, then the app's nudged repaint.
+	hist := strings.LastIndex(stream, "HISTORY-MARK")
+	alt := strings.Index(stream, "\x1b[?1049h")
+	paint := strings.Index(stream, "REPAINTED")
+	g.Desc("replay: %q", stream).True(hist >= 0 && alt > hist && paint > alt)
+
+	// The app's modes came back with the screen.
+	g.Has(stream, "\x1b[?25l")
+	g.Has(stream, "\x1b[?1002h")
+	g.Has(stream, "\x1b[?1006h")
+}
+
+// readStreamUntil accumulates Output frames until want appears (or the read
+// times out), returning everything accumulated so far.
+func readStreamUntil(nc net.Conn, c *proto.Conn, want string) string {
+	deadline := time.Now().Add(readTimeout)
+
+	var acc strings.Builder
+
+	for {
+		_ = nc.SetReadDeadline(deadline)
+
+		mt, payload, err := c.Read()
+		if err != nil {
+			return acc.String()
+		}
+
+		if mt == proto.MsgOutput {
+			acc.Write(payload)
+
+			if strings.Contains(acc.String(), want) {
+				return acc.String()
+			}
+		}
+	}
+}
+
 func TestDetachThenReattach(t *testing.T) {
 	g, st, p := setupDaemon(t)
 	sess := makeSession(g, st, "persist1")

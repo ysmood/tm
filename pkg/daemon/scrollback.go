@@ -83,6 +83,20 @@ func (s *scrollback) History(rows int) []byte {
 	return tailLines(window, rows)
 }
 
+// TermState returns the escape sequences that put a fresh terminal into the
+// session's current terminal state (nil when it is the default state), and
+// whether the session is on the alternate screen. It is replayed after the
+// history window on attach, so a still-running full-screen app gets back the
+// screen buffer and modes it set up (see termModes) — its content is then
+// rebuilt by the app itself (see Daemon.nudgeRepaint), since the alt screen is
+// deliberately not recorded.
+func (s *scrollback) TermState() (restore []byte, alt bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.cook.modes.restore(), s.cook.modes.altOn()
+}
+
 // Clear discards the session's recorded history by truncating the log file in
 // place. The file stays open — it was opened with O_APPEND, so later writes land
 // at the new (zero) end — and the session keeps running; only its recorded past

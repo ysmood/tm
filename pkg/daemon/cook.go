@@ -68,6 +68,12 @@ type cooker struct {
 	joined []byte // scratch to splice held + next chunk when held is non-empty
 	out    []byte // completed lines returned by cook; valid until the next cook call
 	alt    bool   // on the alternate screen buffer: drop output until it is left
+
+	// modes tracks the terminal state the session's program has set up (which
+	// screen buffer, mouse reporting, cursor visibility, ...), fed from the same
+	// escape scan that drives recording. It is what an attach replays to hand the
+	// terminal back to a still-running full-screen app (see termModes).
+	modes termModes
 }
 
 // cell is one column of the current line: the character's own bytes (copied in,
@@ -156,10 +162,11 @@ func (c *cooker) cook(p []byte) []byte {
 }
 
 // handleEscape scans the escape sequence at the start of esc and applies it,
-// returning how many bytes it spans. An alt-screen toggle switches recording on
-// or off; an SGR set updates the active style unless the alt screen is up. If
-// the sequence is truncated at the chunk boundary it is held for the next chunk
-// and held is true, telling cook to stop and return what it has.
+// returning how many bytes it spans. Every complete sequence feeds the mode
+// tracker — an alt-screen toggle there switches recording on or off — and an
+// SGR set updates the active style unless the alt screen is up. If the sequence
+// is truncated at the chunk boundary it is held for the next chunk and held is
+// true, telling cook to stop and return what it has.
 func (c *cooker) handleEscape(esc []byte) (n int, held bool) {
 	n, sgr, complete := scanEscape(esc)
 	if !complete {
@@ -168,9 +175,10 @@ func (c *cooker) handleEscape(esc []byte) (n int, held bool) {
 		return 0, true
 	}
 
-	if enter, ok := altToggle(esc[:n]); ok {
-		c.setAlt(enter)
-	} else if sgr && !c.alt {
+	c.modes.track(esc[:n])
+	c.setAlt(c.modes.altOn())
+
+	if sgr && !c.alt {
 		c.setStyle(esc[:n])
 	}
 
@@ -225,10 +233,15 @@ func (c *cooker) tail() []byte {
 	return c.renderInto(nil, c.col)
 }
 
-// reset discards all buffered state, so a cleared session starts from a clean
-// slate with no half-built line or partial sequence carried across the wipe.
+// reset discards all buffered content, so a cleared session starts from a
+// clean slate with no half-built line or partial sequence carried across the
+// wipe. The terminal-state tracking survives: a wipe erases the recorded past,
+// not the state the session's terminal is actually in — a full-screen app
+// stays on the alt screen through a clear, and recording must stay suppressed
+// (and a later attach must still restore its state) accordingly.
 func (c *cooker) reset() {
-	*c = cooker{}
+	modes := c.modes
+	*c = cooker{modes: modes, alt: modes.altOn()}
 }
 
 // put writes one character's bytes at the cursor column with the active style,
@@ -313,35 +326,15 @@ func (c *cooker) setStyle(seq []byte) {
 	}
 }
 
-// setAlt enters or leaves the alternate screen. The main-screen line and style
-// are left untouched: a terminal preserves the main screen while the alt screen
-// is up and restores it on leave, and cook already suppresses all output in
-// between, so the pre-switch line simply resumes — no alt content can have
-// reached it.
+// setAlt enters or leaves the alternate screen, as tracked by the mode
+// tracker from the "\x1b[?47h/l", "\x1b[?1047h/l", and "\x1b[?1049h/l"
+// toggles a full-screen app swaps its transient screen in with. The
+// main-screen line and style are left untouched: a terminal preserves the
+// main screen while the alt screen is up and restores it on leave, and cook
+// already suppresses all output in between, so the pre-switch line simply
+// resumes — no alt content can have reached it.
 func (c *cooker) setAlt(enter bool) {
 	c.alt = enter
-}
-
-// altToggle reports whether seq is a DEC private mode set/reset for the
-// alternate screen buffer — "\x1b[?47h/l", "\x1b[?1047h/l", or "\x1b[?1049h/l" —
-// and, if so, whether it enters (final 'h') or leaves (final 'l') it. These are
-// how a full-screen app swaps in its own transient screen, which the log skips.
-func altToggle(seq []byte) (enter, ok bool) {
-	if len(seq) < 5 || seq[2] != '?' {
-		return false, false // not a private-mode CSI ("\x1b[?...")
-	}
-
-	final := seq[len(seq)-1]
-	if final != 'h' && final != 'l' {
-		return false, false
-	}
-
-	switch string(seq[3 : len(seq)-1]) {
-	case "47", "1047", "1049":
-		return final == 'h', true
-	default:
-		return false, false
-	}
 }
 
 // sgrPureReset reports whether an SGR parameter list only resets — every

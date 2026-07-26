@@ -114,6 +114,10 @@ Attaching redraws the last window of the session's output — one screenful, rea
 log file — so you land on the screen you left, however long the session has been running. The rest
 of the history stays in the log file, where `tm` never has to stream it to your terminal.
 
+If the session is inside a full-screen app (lazygit, vim, htop, ...), attaching hands the terminal
+back to it: the app's screen and modes are restored and the app itself is prompted to repaint, so
+you land back in its UI rather than on a broken mix of history and stale paint.
+
 If you are already in a session, it will switch to the new session instead of nesting sessions.
 
 ### Open the menu from inside a session

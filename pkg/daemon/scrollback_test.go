@@ -70,6 +70,36 @@ func TestHistoryReadsBoundedTail(t *testing.T) {
 	g.Lte(len(hist), tailBytes)
 }
 
+// TermState reflects the session's live terminal state — and survives a
+// history wipe: clearing erases the recorded past, not the alt screen a
+// still-running full-screen app is on.
+func TestTermState(t *testing.T) {
+	g := got.T(t)
+	sb := newSB(t, g)
+
+	restore, alt := sb.TermState()
+	g.False(alt)
+	g.Len(restore, 0)
+
+	sb.Write([]byte("$ lazygit\n\x1b[?1049h\x1b[?25lPAINT"))
+
+	restore, alt = sb.TermState()
+	g.True(alt)
+	g.Has(string(restore), "\x1b[?1049h")
+	g.Has(string(restore), "\x1b[?25l")
+
+	g.E(sb.Clear())
+
+	_, alt = sb.TermState()
+	g.True(alt) // the wipe cleared the log, not the terminal's state
+
+	sb.Write([]byte("\x1b[?25h\x1b[?1049l$ "))
+
+	restore, alt = sb.TermState()
+	g.False(alt)
+	g.Len(restore, 0)
+}
+
 // Clear truncates the log, so no later replay can show what came before; output
 // after the clear is recorded from a clean slate (the O_APPEND handle writes at
 // the truncated file's end).

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ysmood/tm/pkg/config"
 	"github.com/ysmood/tm/pkg/proto"
@@ -51,6 +52,12 @@ type Daemon struct {
 	// screen (see clearedHint). Never reset: it only matters while the scrollback
 	// is still empty — any later output makes the replay non-empty again.
 	cleared bool
+	// cols/rows mirror the PTY's current size, so an attach can tell whether its
+	// resize actually changed anything: an unchanged size delivers no SIGWINCH,
+	// which is what decides whether a full-screen app needs the repaint nudge
+	// (see nudgeRepaint), and the nudge can tell whether a real resize landed
+	// mid-nudge and should win.
+	cols, rows int
 
 	done chan struct{}
 	once sync.Once
@@ -102,6 +109,8 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 		pty:   tp,
 		sb:    sb,
 		ln:    ln,
+		cols:  defaultCols,
+		rows:  defaultRows,
 		done:  make(chan struct{}),
 	}
 	go d.acceptLoop()
@@ -250,19 +259,25 @@ func (d *Daemon) forwardSwitch(payload []byte) {
 
 // register makes c the active client (displacing any previous one) and replays
 // the last window of recorded output under the lock, so live output can't
-// interleave ahead of it. It returns false if the client went away during the
-// replay.
+// interleave ahead of it — including the repaint a resize provokes from a
+// running full-screen app, which is why the resize also happens under the
+// lock. It returns false if the client went away during the replay.
 func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 	rows := int(att.Rows)
-
-	if att.Cols > 0 && att.Rows > 0 {
-		_ = d.pty.Resize(int(att.Cols), int(att.Rows))
-	} else {
+	if att.Cols <= 0 || att.Rows <= 0 {
 		rows = defaultRows
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	resized := false
+
+	if att.Cols > 0 && att.Rows > 0 && (int(att.Cols) != d.cols || int(att.Rows) != d.rows) {
+		_ = d.pty.Resize(int(att.Cols), int(att.Rows))
+		d.cols, d.rows = int(att.Cols), int(att.Rows)
+		resized = true
+	}
 
 	if d.client != nil {
 		_ = d.client.Close()
@@ -278,6 +293,7 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 	// window carries no probes to answer and no clears to re-run; it only needs
 	// its bare newlines turned back into CRLF for a terminal in raw mode.
 	hist := d.sb.History(rows)
+	restore, alt := d.sb.TermState()
 
 	// A replay was asked for, but the wipe left nothing to show: explain the blank
 	// screen instead of replaying it.
@@ -287,21 +303,36 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 		hist = crlf(hist)
 	}
 
-	if !replay(c, hist) {
+	if !replay(c, hist, restore) {
 		d.client = nil
 
 		return false
 	}
 
+	// The session is inside a full-screen app, whose alt-screen content is not
+	// recorded — only the app itself can rebuild it. A size change above already
+	// made it repaint; an attach at the same size delivered no SIGWINCH, so
+	// nudge one out of it. The mutex order guarantees the repaint reaches the
+	// client after the replay's alt-screen re-entry.
+	if alt && !resized {
+		go d.nudgeRepaint(d.cols, d.rows)
+	}
+
 	return true
 }
 
-// replay sends the soft reset followed by the recorded window to c. A window is
-// one screen of lines — bounded well under proto.MaxPayload by the tail the
-// scrollback reads (see tailBytes) — so it goes out as a single frame, with no
-// chunking or streaming to interrupt. It returns false if a write fails.
-func replay(c *proto.Conn, hist []byte) bool {
-	if len(hist) == 0 {
+// replay sends the soft reset, the recorded window, and the terminal-state
+// restore to c. A window is one screen of lines — bounded well under
+// proto.MaxPayload by the tail the scrollback reads (see tailBytes) — so it
+// goes out as a single frame, with no chunking or streaming to interrupt. The
+// restore comes after the history so the history lands on the main screen:
+// when the session is inside a full-screen app, the restore re-enters the alt
+// screen, and the main screen it leaves behind — what the terminal shows once
+// the app exits — is then the replayed history rather than leftovers of
+// whatever the terminal showed before the attach. It returns false if a write
+// fails.
+func replay(c *proto.Conn, hist, restore []byte) bool {
+	if len(hist) == 0 && len(restore) == 0 {
 		return true
 	}
 
@@ -309,7 +340,76 @@ func replay(c *proto.Conn, hist []byte) bool {
 		return false
 	}
 
-	return c.Write(proto.MsgOutput, hist) == nil
+	if len(hist) > 0 && c.Write(proto.MsgOutput, hist) != nil {
+		return false
+	}
+
+	return len(restore) == 0 || c.Write(proto.MsgOutput, restore) == nil
+}
+
+// repaintDelay separates the repaint nudge's two resizes. Back-to-back they
+// could collapse into one event for a busy app — signals coalesce, so it would
+// wake once, read the (already restored) size, see nothing changed, and skip
+// the repaint. The gap gives it time to observe the shrunken size first.
+const repaintDelay = 50 * time.Millisecond
+
+// nudgeRepaint makes the full-screen app the session is inside repaint its
+// screen, by shrinking the PTY one row and restoring it: two genuine size
+// changes, each delivering a real resize event (SIGWINCH on Unix, a console
+// resize on ConPTY), which every full-screen app answers with a full redraw.
+// The app cannot be told to repaint any other way — there is no standard
+// "repaint" signal, and apps checking that the size actually changed ignore
+// same-size events. Each step yields to any real resize that lands mid-nudge
+// (see setSize), so a client resizing during the nudge wins.
+func (d *Daemon) nudgeRepaint(cols, rows int) {
+	nudgeCols, nudgeRows := cols, rows-1
+	if rows <= 1 {
+		nudgeCols, nudgeRows = cols+1, rows
+	}
+
+	if !d.setSize(nudgeCols, nudgeRows, cols, rows) {
+		return
+	}
+
+	time.Sleep(repaintDelay)
+
+	d.setSize(cols, rows, nudgeCols, nudgeRows)
+}
+
+// clientResize applies a resize sent by the attached client and records it in
+// the size mirror, so attach-time comparisons and a nudge in flight see the
+// PTY's real size.
+func (d *Daemon) clientResize(cols, rows int) {
+	if cols <= 0 || rows <= 0 {
+		return
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if cols == d.cols && rows == d.rows {
+		return
+	}
+
+	_ = d.pty.Resize(cols, rows)
+	d.cols, d.rows = cols, rows
+}
+
+// setSize resizes the PTY to cols×rows provided its size is still
+// fromCols×fromRows, reporting whether it did. The guard keeps a stale nudge
+// step from stomping a real resize that landed in between.
+func (d *Daemon) setSize(cols, rows, fromCols, fromRows int) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.cols != fromCols || d.rows != fromRows {
+		return false
+	}
+
+	_ = d.pty.Resize(cols, rows)
+	d.cols, d.rows = cols, rows
+
+	return true
 }
 
 // crlf turns the cooked log's bare newlines back into CRLF, so a replay lands
@@ -333,7 +433,7 @@ func (d *Daemon) serveInput(c *proto.Conn) {
 			_, _ = d.pty.Write(payload)
 		case proto.MsgResize:
 			if r, derr := proto.DecodeResize(payload); derr == nil {
-				_ = d.pty.Resize(int(r.Cols), int(r.Rows))
+				d.clientResize(int(r.Cols), int(r.Rows))
 			}
 		case proto.MsgDetach:
 			return
