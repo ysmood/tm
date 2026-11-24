@@ -49,6 +49,7 @@ type Daemon struct {
 	pty   *pty.PTY
 	sb    *scrollback
 	ln    net.Listener
+	lock  *os.File // held for the daemon's lifetime; see holdLock
 
 	mu     sync.Mutex
 	client *proto.Conn // currently attached client, or nil
@@ -83,8 +84,18 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 		return nil, err
 	}
 
+	// Taken before anything else, and before the caller records this process's
+	// PID: a session with a recorded PID and a free lock is then known dead (see
+	// ProbeLock), with no window where a live daemon looks otherwise.
+	lock, err := holdLock(p.LockFile(sess.ID))
+	if err != nil {
+		return nil, err
+	}
+
 	sb, err := newScrollback(p.LogFile(sess.ID))
 	if err != nil {
+		_ = lock.Close()
+
 		return nil, err
 	}
 
@@ -96,6 +107,7 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 	tp, err := pty.Start(shell, nil, sessionEnv(sess), sess.Cwd, defaultCols, defaultRows)
 	if err != nil {
 		_ = sb.Close()
+		_ = lock.Close()
 
 		return nil, err
 	}
@@ -104,6 +116,7 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 	if err != nil {
 		_ = tp.Close()
 		_ = sb.Close()
+		_ = lock.Close()
 
 		return nil, err
 	}
@@ -114,6 +127,7 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 		pty:   tp,
 		sb:    sb,
 		ln:    ln,
+		lock:  lock,
 		cols:  defaultCols,
 		rows:  defaultRows,
 		done:  make(chan struct{}),
@@ -484,6 +498,7 @@ func (d *Daemon) shutdown() {
 		_ = d.pty.Close()
 		_ = d.sb.Close()
 		_ = store.New(d.paths).DeleteSession(d.sess.ID)
+		_ = d.lock.Close() // after the delete, so the session never looks dead while listed
 		close(d.done)
 	})
 }

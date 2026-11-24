@@ -114,6 +114,15 @@ func (p Paths) DaemonLogFile(id string) string {
 	return filepath.Join(p.SessionDir(id), "daemon.log")
 }
 
+// LockFile is the file a session's daemon holds an exclusive lock on for as long
+// as it runs. The OS drops the lock when the process dies however it dies, so a
+// free lock proves the daemon is gone even when its recorded PID has since been
+// handed to an unrelated process (see daemon.ProbeLock). It lives in the session's
+// own directory rather than next to the socket, so a /tmp cleaner can't take it.
+func (p Paths) LockFile(id string) string {
+	return filepath.Join(p.SessionDir(id), "daemon.lock")
+}
+
 // EnsureDirs creates Home and the directories shared by every session.
 func (p Paths) EnsureDirs() error {
 	for _, d := range []string{p.Sessions(), p.Namespaces(), p.sock()} {

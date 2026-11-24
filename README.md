@@ -37,7 +37,13 @@ override with the `TM_HOME` environment variable), one directory per session:
 ~/.tm/sessions/<session_id>/meta.json    # name, namespace, shell, cwd, pid
 ~/.tm/sessions/<session_id>/std.log      # the session's scrollback (its shell's raw output)
 ~/.tm/sessions/<session_id>/daemon.log   # the session's background process's own diagnostics
+~/.tm/sessions/<session_id>/daemon.lock  # locked while the background process runs
 ```
+
+A session whose background process died without cleaning up (a crash, `kill -9`, a reboot) is
+removed the next time the menu opens. tm knows it is dead because its `daemon.lock` is no longer
+locked — the OS drops the lock however the process ends — so this holds even when the old process
+id has since been reused by an unrelated process.
 
 Everything a session owns lives in its own directory, so a session is one self-contained thing
 to look at, copy, or delete. There is no database, so the session list loads near-instantly and

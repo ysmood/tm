@@ -267,3 +267,60 @@ func TestControllerClearHistoryWedged(t *testing.T) {
 	c.Err(err)
 	c.Has(err.Error(), "timed out")
 }
+
+// staleLock leaves the lock file a dead daemon of this tm would: present, but
+// held by nothing.
+func (c *ctl) staleLock(id string) {
+	c.Helper()
+	c.E(os.WriteFile(c.paths.LockFile(id), nil, 0o600))
+}
+
+// A dead session whose recorded PID now belongs to an unrelated live process —
+// after a reboot, or once PIDs wrap — is still known dead by its free lock, so
+// [kill session] removes it instead of refusing it as "alive but unreachable".
+// This process's own PID stands in for the reused one.
+func TestControllerKillSessionReusedPID(t *testing.T) {
+	c := setupCtl(t)
+	c.save("ghost", os.Getpid())
+	c.staleLock("ghost")
+
+	c.E(c.KillSession("ghost"))
+
+	_, err := c.st.GetSession("ghost")
+	c.Err(err)
+}
+
+// Reap (which the menu runs every time it opens) drops a dead session with a
+// reused PID along with its directory and log, and keeps a live one.
+func TestControllerReapReusedPID(t *testing.T) {
+	c := setupCtl(t)
+	c.save("ghost", os.Getpid())
+	c.staleLock("ghost")
+	c.plantSecret("ghost")
+
+	c.save("live", os.Getpid())
+	c.startDaemon("live")
+
+	c.Eq(c.Reap(), 1)
+
+	_, err := os.Stat(c.paths.SessionDir("ghost"))
+	c.True(os.IsNotExist(err))
+
+	_, err = c.st.GetSession("live")
+	c.E(err)
+}
+
+// A live daemon that lost its socket (say, to a /tmp cleaner) still holds its
+// lock, so it is kept as alive — the lock never turns a running session dead.
+func TestControllerKillSessionLostSocket(t *testing.T) {
+	c := setupCtl(t)
+	c.save("lost", os.Getpid())
+	c.startDaemon("lost")
+	c.E(os.Remove(c.paths.SockFile("lost")))
+
+	err := c.KillSession("lost")
+	c.Err(err)
+	c.Has(err.Error(), "alive but unreachable")
+
+	c.Eq(c.Reap(), 0)
+}

@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/ysmood/tm/pkg/attach"
 	"github.com/ysmood/tm/pkg/config"
+	"github.com/ysmood/tm/pkg/daemon"
 	"github.com/ysmood/tm/pkg/naming"
 	"github.com/ysmood/tm/pkg/proto"
 	"github.com/ysmood/tm/pkg/store"
@@ -194,7 +195,7 @@ func (c *controller) requireDead(id string) error {
 		return err
 	}
 
-	if sessionLive(sess) {
+	if c.sessionLive(sess) {
 		return errors.New("session is alive but unreachable (pid " + strconv.Itoa(sess.PID) + ")")
 	}
 
@@ -244,7 +245,28 @@ func (c *controller) clearUnreachable(id string) error {
 // sessionLive reports whether a session's daemon is still running. A
 // not-yet-recorded PID (<= 0, set only briefly while a session is spawning)
 // counts as live so a session mid-spawn is never reaped.
-func sessionLive(s store.Session) bool { return s.PID <= 0 || processAlive(s.PID) }
+//
+// The daemon's lock decides the rest (see daemon.ProbeLock): a daemon takes it
+// before its PID is recorded, so a recorded PID with a free lock means that
+// daemon has exited, however alive the PID looks — after a reboot, or once PIDs
+// wrap, a dead session's PID can belong to an unrelated process, and trusting it
+// would keep the session listed (and unkillable) forever. Only when the lock
+// can't tell (a daemon from a tm that predates it) does the PID alone decide.
+func (c *controller) sessionLive(s store.Session) bool {
+	if s.PID <= 0 {
+		return true
+	}
+
+	switch daemon.ProbeLock(c.st.Paths().LockFile(s.ID)) {
+	case daemon.LockHeld:
+		return true
+	case daemon.LockFree:
+		return false
+	case daemon.LockUnknown:
+	}
+
+	return processAlive(s.PID)
+}
 
 // Reap drops sessions whose daemon is no longer running and reports how many it
 // removed. The menu calls it after a failed attach: a session whose daemon was
@@ -253,7 +275,7 @@ func sessionLive(s store.Session) bool { return s.PID <= 0 || processAlive(s.PID
 // without reaping it the user can reselect it and bounce forever.
 func (c *controller) Reap() int {
 	before, _ := c.st.ListSessions()
-	_ = c.st.Prune(sessionLive)
+	_ = c.st.Prune(c.sessionLive)
 	after, _ := c.st.ListSessions()
 
 	return len(before) - len(after)
@@ -698,7 +720,7 @@ func runInSession(ctrl *controller) error {
 // this process has no $TM_SESSION — runMenu uses it to reopen the menu as
 // in-session after Ctrl-\.
 func showMenu(st *store.Store, ctrl *controller, status, curID, curName string) (tui.Result, []string, error) {
-	_ = st.Prune(sessionLive)
+	_ = st.Prune(ctrl.sessionLive)
 
 	m := tui.New(st, ctrl)
 	if ns := strings.TrimSpace(os.Getenv(config.EnvNamespace)); ns != "" {
