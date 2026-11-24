@@ -61,13 +61,14 @@ var blankCell = cell{n: 1, text: [utf8.UTFMax]byte{' '}}
 // copy or allocate per chunk in steady state: the read buffer is scanned in
 // place. All the fields below outlive a single call and are reused across them.
 type cooker struct {
-	cells  []cell // the in-progress (not yet newline-terminated) line, by column
-	col    int    // the cursor's column within the line
-	style  []byte // SGR sequence(s) active for new cells (cooker-owned; nil = default)
-	held   []byte // a sequence or rune split across calls, kept for the next chunk
-	joined []byte // scratch to splice held + next chunk when held is non-empty
-	out    []byte // completed lines returned by cook; valid until the next cook call
-	alt    bool   // on the alternate screen buffer: drop output until it is left
+	cells  []cell   // the in-progress (not yet newline-terminated) line, by column
+	col    int      // the cursor's column within the line
+	sgr    sgrState // the SGR attributes in effect for new cells
+	style  []byte   // sgr rendered as one sequence, shared by cells (immutable; nil = default)
+	held   []byte   // a sequence or rune split across calls, kept for the next chunk
+	joined []byte   // scratch to splice held + next chunk when held is non-empty
+	out    []byte   // completed lines returned by cook; valid until the next cook call
+	alt    bool     // on the alternate screen buffer: drop output until it is left
 
 	// modes tracks the terminal state the session's program has set up (which
 	// screen buffer, mouse reporting, cursor visibility, ...), fed from the same
@@ -305,24 +306,18 @@ func (c *cooker) renderInto(dst []byte, floor int) []byte {
 	return dst
 }
 
-// setStyle updates the active style from an SGR sequence. A reset (a 0 or empty
-// parameter) clears the accumulated style; other attributes accumulate, in the
-// order they arrived, so re-emitting them reproduces the same final appearance.
-// Each update allocates a fresh slice, so the style already stored in written
-// cells is never mutated underneath them.
+// setStyle folds an SGR sequence into the active style (see sgrState) and, if
+// that changed it, re-renders the style new cells take. The rendered form is a
+// single sequence of bounded size, so neither the log nor the cooker grows with
+// the number of SGR sequences a program sends. A fresh slice is rendered on each
+// change, so the style already stored in written cells is never mutated
+// underneath them.
 func (c *cooker) setStyle(seq []byte) {
-	params := seq[2 : len(seq)-1] // between the "\x1b[" and the final 'm'
+	before := c.sgr
+	c.sgr.apply(string(seq[2 : len(seq)-1])) // between the "\x1b[" and the final 'm'
 
-	switch {
-	case sgrPureReset(params):
-		c.style = nil
-	case sgrHasReset(params):
-		c.style = bytes.Clone(seq) // a reset mixed with new attributes
-	default:
-		style := make([]byte, 0, len(c.style)+len(seq))
-		style = append(style, c.style...)
-		style = append(style, seq...)
-		c.style = style
+	if c.sgr != before {
+		c.style = c.sgr.render()
 	}
 }
 
@@ -335,34 +330,6 @@ func (c *cooker) setStyle(seq []byte) {
 // resumes — no alt content can have reached it.
 func (c *cooker) setAlt(enter bool) {
 	c.alt = enter
-}
-
-// sgrPureReset reports whether an SGR parameter list only resets — every
-// parameter is empty or "0" (e.g. "\x1b[0m", "\x1b[m", "\x1b[0;0m").
-func sgrPureReset(params []byte) bool {
-	for f := range bytes.SplitSeq(params, []byte{';'}) {
-		if !isZeroParam(f) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// sgrHasReset reports whether any parameter resets, so the style accumulated
-// before it should be dropped (e.g. "\x1b[0;1;31m" resets, then sets bold red).
-func sgrHasReset(params []byte) bool {
-	for f := range bytes.SplitSeq(params, []byte{';'}) {
-		if isZeroParam(f) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func isZeroParam(f []byte) bool {
-	return len(f) == 0 || string(f) == "0"
 }
 
 // decodeRune returns the bytes of the rune at the start of p and its size. A

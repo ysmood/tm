@@ -141,12 +141,13 @@ func TestCookTailKeepsPromptSpace(t *testing.T) {
 }
 
 // SGR attributes accumulate and a reset clears them, so re-emitting the stored
-// style reproduces the same appearance after an in-line overwrite.
+// style reproduces the same appearance after an in-line overwrite. The stored
+// style is the resulting state as one sequence, not the sequences that built it.
 func TestCookStyleAccumulates(t *testing.T) {
 	g := got.T(t)
 
-	// Bold then red, both active on the text.
-	g.Eq(cookAll("\x1b[1m\x1b[31mx"), "\x1b[1m\x1b[31mx\x1b[0m")
+	// Bold then red, both active on the text, emitted together.
+	g.Eq(cookAll("\x1b[1m\x1b[31mx"), "\x1b[1;31mx\x1b[0m")
 
 	// A reset drops the accumulated attributes; text after it is unstyled.
 	g.Eq(cookAll("\x1b[1mA\x1b[0mB"), "\x1b[1mA\x1b[0mB")
@@ -155,7 +156,58 @@ func TestCookStyleAccumulates(t *testing.T) {
 	g.Eq(cookAll("\x1b[1mA\x1b[mB"), "\x1b[1mA\x1b[0mB")
 
 	// A reset mixed with new attributes replaces the style in one step.
-	g.Eq(cookAll("\x1b[31mA\x1b[0;1mB"), "\x1b[31mA\x1b[0m\x1b[0;1mB\x1b[0m")
+	g.Eq(cookAll("\x1b[31mA\x1b[0;1mB"), "\x1b[31mA\x1b[0m\x1b[1mB\x1b[0m")
+
+	// A later color replaces the earlier one rather than stacking on it.
+	g.Eq(cookAll("\x1b[31m\x1b[32mx"), "\x1b[32mx\x1b[0m")
+}
+
+// Turning attributes off one by one (22, 23, 39, ...) — how Ink-based TUIs
+// like Claude Code end a styled span, never sending a full reset — clears just
+// those attributes. The stored style must not grow with the number of
+// sequences: recording each one verbatim made every styled run re-emit the
+// whole history of them, so lines grew without bound (92 KB of
+// "\x1b[2m\x1b[22m" pairs in a minute-old session).
+func TestCookStyleBoundedWithoutReset(t *testing.T) {
+	g := got.T(t)
+
+	g.Eq(cookAll("\x1b[2ma\x1b[22mb"), "\x1b[2ma\x1b[0mb")
+	g.Eq(cookAll("\x1b[1;3;36ma\x1b[23mb\x1b[39mc\x1b[22md"),
+		"\x1b[1;3;36ma\x1b[0m\x1b[1;36mb\x1b[0m\x1b[1mc\x1b[0md")
+
+	noise := strings.Repeat("\x1b[2m\x1b[22m\x1b[36m\x1b[39m", 10000)
+	g.Eq(cookAll(noise+"\x1b[36mx\x1b[39m\n"), "\x1b[36mx\x1b[0m\n")
+
+	var c cooker
+
+	c.cook([]byte(noise + "\x1b[1;2;3;4;5;7;8;9;53;31;42;58;5;1m"))
+	g.Lte(len(c.style), 64) // every attribute on at once still renders short
+}
+
+// Each attribute is set and cleared on its own, and 256-color, truecolor (both
+// separator forms) and underline-style parameters are kept whole.
+func TestCookStyleParams(t *testing.T) {
+	g := got.T(t)
+
+	check := func(in, want string) {
+		g.Helper()
+		g.Eq(cookAll(in+"x"), want)
+	}
+
+	check("\x1b[38;5;242m", "\x1b[38;5;242mx\x1b[0m")
+	check("\x1b[1;38;2;1;2;3;48;5;4m", "\x1b[1;38;2;1;2;3;48;5;4mx\x1b[0m")
+	check("\x1b[38:2::1:2:3m", "\x1b[38:2::1:2:3mx\x1b[0m")
+	check("\x1b[4:3m", "\x1b[4:3mx\x1b[0m")
+	check("\x1b[4:3m\x1b[4:0m", "x")
+	check("\x1b[97;104m\x1b[49m", "\x1b[97mx\x1b[0m")
+	check("\x1b[7;9m\x1b[27m", "\x1b[9mx\x1b[0m")
+	check("\x1b[58;5;1m\x1b[59m", "x")
+
+	// Parameters the log has no use for are dropped; a malformed extended color
+	// stops the parse, keeping what came before it.
+	check("\x1b[1;11m", "\x1b[1mx\x1b[0m")
+	check("\x1b[1;38;9;31m", "\x1b[1mx\x1b[0m")
+	check("\x1b[38;5m", "x")
 }
 
 // The cooker is stateful across calls: a sequence, a multi-byte rune, or a line
