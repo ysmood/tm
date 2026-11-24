@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"bytes"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ysmood/got"
@@ -113,4 +116,111 @@ func TestClear(t *testing.T) {
 
 	sb.Write([]byte("after\n"))
 	g.Eq(string(sb.History(24)), "after\n")
+}
+
+// readLog returns the log file's whole content, as a [history] pager sees it.
+func readLog(g got.G, sb *scrollback) string {
+	b, err := os.ReadFile(sb.path)
+	g.E(err)
+
+	return string(b)
+}
+
+// A log that outgrows its limit drops its oldest lines, keeping the newest whole
+// lines that fit in half the limit; later output still lands at the end.
+func TestLogTrimsToNewestHalf(t *testing.T) {
+	g := got.T(t)
+	sb := newSB(t, g)
+	sb.limit = 40
+
+	for i := range 6 {
+		sb.Write(fmt.Appendf(nil, "line-%d\n", i)) // 7 bytes each
+	}
+
+	// The 6th line took the log to 42 bytes: only the newest lines lying wholly
+	// in its last 20 bytes survive (line-3 straddles the cut, so it goes too).
+	g.Eq(readLog(g, sb), "line-4\nline-5\n")
+	g.Eq(sb.size, int64(14))
+
+	sb.Write([]byte("line-6\n"))
+	g.Eq(readLog(g, sb), "line-4\nline-5\nline-6\n")
+	g.Eq(string(sb.History(2)), "line-5\nline-6\n")
+}
+
+// The cut always lands on a line start, so the log never opens with a torn line
+// (or a torn escape sequence or rune within it).
+func TestLogTrimCutsAtLineStart(t *testing.T) {
+	g := got.T(t)
+	sb := newSB(t, g)
+	sb.limit = 20
+
+	sb.Write([]byte("aaaaaaaaaa\nbbbbbbbbbb\nc\n")) // 25 bytes; the newest 10 start mid-b
+
+	g.Eq(readLog(g, sb), "c\n")
+}
+
+// A line longer than half the limit cannot be kept whole, so it is dropped
+// rather than kept torn.
+func TestLogTrimDropsOversizedLine(t *testing.T) {
+	g := got.T(t)
+	sb := newSB(t, g)
+	sb.limit = 20
+
+	sb.Write([]byte(strings.Repeat("x", 30) + "\n"))
+	g.Eq(readLog(g, sb), "")
+	g.Eq(sb.size, int64(0))
+
+	sb.Write([]byte("next\n"))
+	g.Eq(readLog(g, sb), "next\n")
+}
+
+// A daemon opening a log already past the limit (left by an older tm) picks up
+// its size, so the first write trims it.
+func TestLogTrimsExistingOversizedLog(t *testing.T) {
+	g := got.T(t)
+	p := filepath.Join(t.TempDir(), "log")
+	g.E(os.WriteFile(p, []byte(strings.Repeat("old\n", 10)), 0o600))
+
+	sb, err := newScrollback(p)
+	g.E(err)
+	g.Cleanup(func() { _ = sb.Close() })
+
+	g.Eq(sb.size, int64(40))
+
+	sb.limit = 20
+	sb.Write([]byte("new\n"))
+	g.Eq(readLog(g, sb), "old\nnew\n")
+}
+
+// Clear resets the tracked size along with the file, so the limit is measured
+// from the wipe.
+func TestClearResetsLogSize(t *testing.T) {
+	g := got.T(t)
+	sb := newSB(t, g)
+	sb.Write([]byte("secret\n"))
+
+	g.E(sb.Clear())
+	g.Eq(sb.size, int64(0))
+}
+
+// The in-place copy spans many chunks when the kept half is large, each one
+// writing over bytes already read; the result must be exactly the newest lines.
+func TestLogTrimCopiesManyChunks(t *testing.T) {
+	g := got.T(t)
+	sb := newSB(t, g)
+	sb.limit = 20 * trimBufSize
+
+	var all []byte
+
+	for i := 0; int64(len(all)) <= sb.limit; i++ {
+		line := fmt.Appendf(nil, "\x1b[31mline %07d\x1b[0m\n", i)
+		all = append(all, line...)
+		sb.Write(line)
+	}
+
+	log := readLog(g, sb)
+	g.Lte(int64(len(log)), sb.limit/2)
+	g.Gt(len(log), 0)
+	g.True(strings.HasSuffix(string(all), log))
+	g.True(bytes.Contains(all, []byte("\n"+log))) // kept from a line start
 }

@@ -106,6 +106,9 @@ output in a pager, so the whole scrollback is scrollable and searchable and the 
 preserved. The session keeps running and nothing on your screen is disturbed; quit the pager (`q`)
 to return to the menu.
 
+A session's log is capped at 64 MiB, so a session that prints forever can't fill the disk: once the
+log grows past that, its oldest lines are dropped, keeping the newest 32 MiB.
+
 ### Attach to a session
 
 Each session will be listed with its name, just type in the name of the session you want to attach to and hit enter. You will be attached to that session.
