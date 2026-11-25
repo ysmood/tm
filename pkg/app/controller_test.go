@@ -64,12 +64,12 @@ func newCtl(t *testing.T) *ctl {
 }
 
 // setupCtl is newCtl for a test that leaves package state alone, so it can run
-// alongside the others.
+// alongside the others. It goes parallel first, so newCtl's deadline counts the
+// test's own run, not the wait for a free slot behind slower tests.
 func setupCtl(t *testing.T) *ctl {
-	c := newCtl(t)
-	c.Parallel()
+	t.Parallel()
 
-	return c
+	return newCtl(t)
 }
 
 // save records a session with the given id and pid without starting anything, so a

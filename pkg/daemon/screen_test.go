@@ -443,3 +443,21 @@ func TestScreenHyperlinks(t *testing.T) {
 	s, _ = feed(10, 1, "\x1b]8;;"+strings.Repeat("u", maxLinkBytes)+"\x1b\\x")
 	g.Eq(s.shown()[0], "x")
 }
+
+// A painted screen keeps a prompt's trailing space: it is what the shell
+// printed, and the next keystroke's echo lands after it. Only cells nothing was
+// written to are left for the erase to blank.
+func TestScreenPaintKeepsPrintedSpaces(t *testing.T) {
+	g := got.T(t)
+
+	s, _ := feed(20, 2, "TMPROMPT$ ")
+	g.Has(string(s.paint()), "TMPROMPT$ \x1b[K")
+
+	// So does a reflow — an attach resizes to the client first.
+	s.resize(30, 3)
+	g.Has(string(s.paint()), "TMPROMPT$ \x1b[K")
+
+	// History drops it, as padding.
+	_, hist := feed(20, 1, "TMPROMPT$ \r\n")
+	g.Eq(hist, "TMPROMPT$\n")
+}

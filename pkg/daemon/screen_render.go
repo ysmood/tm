@@ -12,13 +12,13 @@ var sgrReset = []byte("\x1b[0m")
 // renderRow appends cells' visible form to dst — text, with each run's style
 // emitted where it changes and a closing reset if the row ends styled — and
 // returns it with the number of columns rendered. Trailing unstyled blanks (a
-// terminal's padding) are left out. A row that continues onto the next keeps
-// the spaces it printed, which are real text joining the two, and drops only
-// the cells nothing was written to (the gap a wide character left wrapping
-// early).
-func renderRow(dst []byte, cells []cell, continues bool) ([]byte, int) {
+// terminal's padding) are left out. With keepSpaces, trailing spaces that were
+// printed stay and only the cells nothing was written to are dropped: a row
+// continuing onto the next is joined to it by its spaces, and a painted screen
+// must reproduce a prompt's trailing space, which a program can rely on.
+func renderRow(dst []byte, cells []cell, keepSpaces bool) ([]byte, int) {
 	end := len(cells)
-	for end > 0 && cells[end-1].isPad() && (!continues || cells[end-1].text != " ") {
+	for end > 0 && cells[end-1].isPad() && (!keepSpaces || cells[end-1].text != " ") {
 		end--
 	}
 
@@ -181,7 +181,7 @@ func (s *screen) paintRows(b []byte, g []row, alt bool) []byte {
 
 		var n int
 
-		b, n = renderRow(b, g[y].cells, false)
+		b, n = renderRow(b, g[y].cells, true)
 		if n < s.cols {
 			b = append(b, "\x1b[K"...) // erase the rest; not at the edge, where it would eat the last column
 		}

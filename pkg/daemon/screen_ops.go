@@ -441,8 +441,11 @@ func reflow(g []row, cols int, cur cursorPos) ([]row, cursorPos) {
 			n--
 		}
 
-		line = line[:n]
-		for len(line) <= off { // keep the cursor's cell, past the text or not
+		// Everything before the cursor stays: a prompt's trailing space is text
+		// the shell printed, not padding. And the cursor's own cell is kept,
+		// past the text or not.
+		line = line[:max(n, min(off, len(line)))]
+		for len(line) <= off {
 			line = append(line, blank)
 		}
 
