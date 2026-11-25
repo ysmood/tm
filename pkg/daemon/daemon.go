@@ -24,13 +24,13 @@ const (
 	readBufSize = 32 * 1024
 )
 
-// softReset is sent before replaying history so the terminal recovers from
-// attaching into the middle of a full-screen app: a VT soft terminal reset
-// (DECSTR), plus clearing the keyboard protocols DECSTR does not cover (kitty
-// flags, xterm modifyOtherKeys) — a stale protocol left on the terminal would
-// re-encode keys, taking the relay's Ctrl-\ menu key with it. The state
-// restore that follows the history re-arms them when the session's app has
-// them on (see termModes).
+// softReset is sent before a replay so the terminal starts from known state
+// whatever it was doing before — say, still in another session's full-screen
+// app: a VT soft terminal reset (DECSTR), plus clearing the keyboard protocols
+// DECSTR does not cover (kitty flags, xterm modifyOtherKeys) — a stale protocol
+// left on the terminal would re-encode keys, taking the relay's Ctrl-\ menu key
+// with it. The screen's paint that follows re-arms them when the session's
+// program has them on (see termModes).
 var softReset = []byte("\x1b[!p\x1b[=0;1u\x1b[>4m")
 
 // clearedHint is replayed in place of history when a cleared session is
@@ -92,7 +92,7 @@ func Start(p config.Paths, sess store.Session) (*Daemon, error) {
 		return nil, err
 	}
 
-	sb, err := newScrollback(p.LogFile(sess.ID))
+	sb, err := newScrollback(p.LogFile(sess.ID), defaultCols, defaultRows)
 	if err != nil {
 		_ = lock.Close()
 
@@ -160,7 +160,10 @@ func (d *Daemon) Close() error {
 }
 
 // ptyLoop pumps PTY output to scrollback and the attached client until the
-// shell exits.
+// shell exits. Each chunk reaches the screen and the client under one hold of
+// d.mu, so an attach (which paints the screen under d.mu) sees every chunk
+// either already on the screen it paints or still to come as live output —
+// never both, which would apply a relative cursor move twice.
 func (d *Daemon) ptyLoop() {
 	buf := make([]byte, readBufSize)
 
@@ -168,8 +171,10 @@ func (d *Daemon) ptyLoop() {
 		n, err := d.pty.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			d.sb.Write(chunk)
+
 			d.mu.Lock()
+			d.sb.Write(chunk)
+
 			if d.client != nil {
 				werr := d.client.Write(proto.MsgOutput, chunk)
 				if werr != nil {
@@ -228,6 +233,19 @@ func (d *Daemon) handleConn(nc net.Conn) {
 		return
 	}
 
+	// A MsgScreen connection asks for what the session's main screen shows, as
+	// history text, so [history] can page it after the log (which holds only what
+	// has scrolled off). The deferred close of this connection ends the reply.
+	if mt == proto.MsgScreen {
+		d.mu.Lock()
+		snap := d.sb.Snapshot()
+		d.mu.Unlock()
+
+		sendFrames(c, snap)
+
+		return
+	}
+
 	// A MsgClear connection wipes the session's recorded history — its log file —
 	// without attaching, so a later attach replays none of it. The session and any
 	// attached client run on undisturbed; the deferred close of this connection
@@ -277,8 +295,8 @@ func (d *Daemon) forwardSwitch(payload []byte) {
 }
 
 // register makes c the active client (displacing any previous one) and replays
-// the last window of recorded output under the lock, so live output can't
-// interleave ahead of it — including the repaint a resize provokes from a
+// the session's screen under the lock, so live output can't interleave ahead of
+// it — including the repaint a resize provokes from a
 // running full-screen app, which is why the resize also happens under the
 // lock. It returns false if the client went away during the replay.
 func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
@@ -293,38 +311,29 @@ func (d *Daemon) register(c *proto.Conn, att proto.Attach) bool {
 
 	d.client = c
 
-	var alt bool
+	// Resuming a session whose screen is still up replays nothing; the menu may
+	// just have closed over it, though, so the repaint decision below applies
+	// either way.
+	if att.Replay && !sendFrames(c, d.replayStream(int(att.Rows))) {
+		d.client = nil
 
-	if att.Replay {
-		hist, restore, replayAlt := d.replayWindow(int(att.Rows))
-		if !replay(c, hist, restore) {
-			d.client = nil
-
-			return false
-		}
-
-		alt = replayAlt
-	} else {
-		// Resuming a session whose screen is still up: nothing to replay. The
-		// menu may just have closed over it, though, so the repaint decision
-		// below still applies.
-		_, alt = d.sb.TermState()
+		return false
 	}
 
-	// The session is inside a full-screen app, whose alt-screen content is not
-	// recorded — only the app itself can rebuild it, whether a replay just
-	// re-entered its screen or a closing menu left a hole in it. A size change
+	// The session is inside a full-screen app. The replay painted its screen as
+	// the shadow terminal last saw it, but only the app itself can rebuild it
+	// faithfully — and a closing menu may have left a hole in it. A size change
 	// above already made it repaint; an attach at the same size delivered no
 	// SIGWINCH, so nudge one out of it. The mutex order guarantees the repaint
 	// reaches the client after the replay.
-	if alt && !resized {
+	if d.sb.Alt() && !resized {
 		go d.nudgeRepaint(d.cols, d.rows)
 	}
 
 	return true
 }
 
-// resizeTo applies an attach's terminal size to the PTY when it is valid and
+// resizeTo applies an attach's terminal size to the session when it is valid and
 // actually different, reporting whether a resize happened. The caller holds
 // d.mu.
 func (d *Daemon) resizeTo(cols, rows int) bool {
@@ -332,60 +341,63 @@ func (d *Daemon) resizeTo(cols, rows int) bool {
 		return false
 	}
 
-	_ = d.pty.Resize(cols, rows)
-	d.cols, d.rows = cols, rows
+	d.applySize(cols, rows)
 
 	return true
 }
 
-// replayWindow assembles what a replaying attach sends: the last window of
-// recorded output and the terminal-state restore, plus whether the session is
-// on the alt screen. The log is already cooked to visible text and color (see
-// cooker), so the window carries no probes to answer and no clears to re-run;
-// it only needs its bare newlines turned back into CRLF for a terminal in raw
-// mode. When a wipe left nothing to show, the window explains the blank screen
-// instead (see clearedHint). The caller holds d.mu.
-func (d *Daemon) replayWindow(rows int) (hist, restore []byte, alt bool) {
-	if rows <= 0 {
-		rows = defaultRows
-	}
-
-	hist = d.sb.History(rows)
-	restore, alt = d.sb.TermState()
-
-	if len(hist) == 0 && d.cleared {
-		hist = clearedHint
-	} else {
-		hist = crlf(hist)
-	}
-
-	return hist, restore, alt
+// applySize resizes the shadow screen, then the PTY. In that order, the screen
+// is already at the new size when the program's redraw for it arrives. The
+// caller holds d.mu.
+func (d *Daemon) applySize(cols, rows int) {
+	d.sb.Resize(cols, rows)
+	_ = d.pty.Resize(cols, rows)
+	d.cols, d.rows = cols, rows
 }
 
-// replay sends the soft reset, the recorded window, and the terminal-state
-// restore to c. A window is one screen of lines — bounded well under
-// proto.MaxPayload by the tail the scrollback reads (see tailBytes) — so it
-// goes out as a single frame, with no chunking or streaming to interrupt. The
-// restore comes after the history so the history lands on the main screen:
-// when the session is inside a full-screen app, the restore re-enters the alt
-// screen, and the main screen it leaves behind — what the terminal shows once
-// the app exits — is then the replayed history rather than leftovers of
-// whatever the terminal showed before the attach. It returns false if a write
-// fails.
-func replay(c *proto.Conn, hist, restore []byte) bool {
-	if len(hist) == 0 && len(restore) == 0 {
-		return true
+// replayStream assembles what a replaying attach sends: a soft reset, the log's
+// last screenful of lines — so the client's own scrollback has the history just
+// above — then the screen itself (see screen.paint), which leaves the client
+// showing exactly what the session's terminal would, cursor and modes included.
+// The log holds clean text and color, so the history carries no probes to answer
+// and no clears to re-run; it only needs its bare newlines turned back into CRLF
+// for a terminal in raw mode. When a wipe left nothing to show, the replay
+// explains the blank screen instead (see clearedHint). The caller holds d.mu.
+func (d *Daemon) replayStream(rows int) []byte {
+	if rows <= 0 {
+		rows = d.rows
 	}
 
-	if err := c.Write(proto.MsgOutput, softReset); err != nil {
-		return false
+	hist := d.sb.History(rows)
+
+	b := append([]byte{}, softReset...)
+
+	if len(hist) == 0 && d.cleared && d.sb.Blank() && !d.sb.Alt() {
+		return append(b, clearedHint...)
 	}
 
-	if len(hist) > 0 && c.Write(proto.MsgOutput, hist) != nil {
-		return false
+	b = append(b, crlf(hist)...)
+	if len(hist) > 0 && hist[len(hist)-1] != '\n' {
+		b = append(b, "\r\n"...) // the log ends mid-line: its rest is the screen's first row
 	}
 
-	return len(restore) == 0 || c.Write(proto.MsgOutput, restore) == nil
+	return append(b, d.sb.Paint()...)
+}
+
+// sendFrames writes p to c as Output frames, split so each fits a frame's
+// payload limit, reporting whether every write succeeded. The caller holds d.mu,
+// so no live output can land between the frames.
+func sendFrames(c *proto.Conn, p []byte) bool {
+	for len(p) > 0 {
+		n := min(len(p), proto.MaxPayload)
+		if c.Write(proto.MsgOutput, p[:n]) != nil {
+			return false
+		}
+
+		p = p[n:]
+	}
+
+	return true
 }
 
 // repaintDelay separates the repaint nudge's two resizes. Back-to-back they
@@ -432,13 +444,14 @@ func (d *Daemon) clientResize(cols, rows int) {
 		return
 	}
 
-	_ = d.pty.Resize(cols, rows)
-	d.cols, d.rows = cols, rows
+	d.applySize(cols, rows)
 }
 
 // setSize resizes the PTY to cols×rows provided its size is still
 // fromCols×fromRows, reporting whether it did. The guard keeps a stale nudge
-// step from stomping a real resize that landed in between.
+// step from stomping a real resize that landed in between. It is the nudge's
+// resize, so it leaves the shadow screen alone: the client's terminal never
+// changed size, and the app's final repaint is for the size it is restored to.
 func (d *Daemon) setSize(cols, rows, fromCols, fromRows int) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -453,10 +466,10 @@ func (d *Daemon) setSize(cols, rows, fromCols, fromRows int) bool {
 	return true
 }
 
-// crlf turns the cooked log's bare newlines back into CRLF, so a replay lands
-// each line at column 0 on a terminal in raw mode (where a lone LF only moves
-// down). The cooked stream has no carriage returns of its own, so this can't
-// double up an existing one.
+// crlf turns the log's bare newlines back into CRLF, so a replay lands each line
+// at column 0 on a terminal in raw mode (where a lone LF only moves down). The
+// log has no carriage returns of its own, so this can't double up an existing
+// one.
 func crlf(p []byte) []byte {
 	return bytes.ReplaceAll(p, []byte("\n"), []byte("\r\n"))
 }

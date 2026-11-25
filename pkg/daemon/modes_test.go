@@ -1,20 +1,18 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ysmood/got"
 )
 
-// modesAfter feeds a raw stream through a cooker and returns the tracked
-// terminal state, the way the daemon sees it at attach time.
+// modesAfter feeds a raw stream to a screen and returns the tracked terminal
+// state, the way the daemon sees it at attach time.
 func modesAfter(chunks ...string) termModes {
-	var c cooker
-	for _, ch := range chunks {
-		c.cook([]byte(ch))
-	}
+	s, _ := feed(80, 24, chunks...)
 
-	return c.modes
+	return s.modes
 }
 
 // A fresh session has nothing to restore; a lazygit-style full-screen app
@@ -49,8 +47,8 @@ func TestModesAltVariants(t *testing.T) {
 }
 
 // A private-mode set with several parameters applies them all — both to the
-// tracked state and to the recording toggle, so a combined
-// "\x1b[?1049;2004h" still suppresses the alt-screen paint from the log.
+// tracked state and to the screen, so a combined "\x1b[?1049;2004h" still
+// keeps the alt-screen paint off the main screen.
 func TestModesMultiParam(t *testing.T) {
 	g := got.T(t)
 
@@ -58,7 +56,8 @@ func TestModesMultiParam(t *testing.T) {
 	g.Eq(m.altMode, 1049)
 	g.True(m.paste)
 
-	g.Eq(cookAll("a\x1b[?1049;2004hHIDDEN\x1b[?1049lb"), "ab")
+	s, _ := feed(80, 24, "a\x1b[?1049;2004hHIDDEN\x1b[?1049lb")
+	g.Eq(string(s.snapshot()), "ab\n")
 }
 
 // Mouse tracking modes replace one another (a terminal runs at most one), and
@@ -113,25 +112,27 @@ func TestModesKeyboardProtocols(t *testing.T) {
 	g.Len(modesAfter("\x1b[=1u\x1b[=0u\x1b[>4m").restore(), 0)
 }
 
-// A history wipe resets the cooker's buffered content but not the tracked
-// terminal state: the session's terminal is still inside whatever app was
-// running, so recording stays suppressed and an attach still restores it.
-func TestModesSurviveReset(t *testing.T) {
+// A history wipe blanks the screen but keeps the tracked terminal state: the
+// session's terminal is still inside whatever app was running, so its paint
+// stays off the main screen and an attach still restores it.
+func TestModesSurviveClear(t *testing.T) {
 	g := got.T(t)
 
-	var c cooker
+	s := newScreen(80, 3)
 
-	c.cook([]byte("$ vim\n\x1b[?1049h\x1b[?25lPAINT"))
-	c.reset()
+	s.write([]byte("$ vim\r\n\x1b[?1049h\x1b[?25lPAINT"))
+	s.clearContent()
 
-	g.Eq(c.modes.altMode, 1049)
-	g.True(c.modes.cursorHidden)
+	g.Eq(s.modes.altMode, 1049)
+	g.True(s.modes.cursorHidden)
 
-	// Still on the alt screen: paint after the wipe stays out of the log.
-	g.Len(c.cook([]byte("MORE PAINT\n")), 0)
+	// Still on the alt screen: paint after the wipe is never history.
+	g.Len(s.write([]byte(strings.Repeat("MORE PAINT\r\n", 10))), 0)
+	g.Len(s.snapshot(), 0)
 
-	// Leaving the alt screen resumes recording as usual.
-	c.cook([]byte("\x1b[?25h\x1b[?1049l"))
-	g.Eq(string(c.cook([]byte("$ done\n"))), "$ done\n")
-	g.Len(c.modes.restore(), 0)
+	// Leaving the alt screen goes back to the (wiped) main screen, the cursor
+	// where it was saved: the row below "$ vim".
+	s.write([]byte("\x1b[?25h\x1b[?1049l$ done"))
+	g.Eq(string(s.snapshot()), "\n$ done\n")
+	g.Len(s.modes.restore(), 0)
 }

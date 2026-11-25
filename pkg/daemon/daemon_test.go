@@ -682,3 +682,52 @@ func TestDetachThenReattach(t *testing.T) {
 	found = readUntil(nc2, c2, "first-attach")
 	g.True(found)
 }
+
+// A program redrawing a block in place — an inline TUI erasing its lines and
+// moving the cursor up, frame after frame — leaves nothing in the log: the
+// shadow screen sees the block repainted where it was, and nothing scrolled
+// off. The screen itself, which [history] pages after the log (MsgScreen),
+// shows only the final frame.
+func TestRedrawingProgramRecordsNothing(t *testing.T) {
+	g, st, p := setupDaemon(t)
+	sess := makeSession(g, st, "redraw")
+
+	d, err := daemon.Start(p, sess)
+	g.E(err)
+
+	defer d.Close()
+
+	nc, c := dialAttach(g, proto.SockAddr(p, sess.ID), proto.Attach{Cols: 80, Rows: 24})
+	defer nc.Close()
+
+	// The marker is printed in two halves so the tty's echo of the script's
+	// path can't match it.
+	app := filepath.Join(t.TempDir(), "inline.sh")
+	g.E(os.WriteFile(app, []byte("#!/bin/sh\n"+
+		"printf 'a\\nb\\nc'\n"+
+		"i=0; while [ $i -lt 300 ]; do\n"+
+		"  printf '\\033[2K\\033[1A\\033[2K\\033[1A\\033[2K\\033[Gframe %d\\nstatus\\nprompt' $i\n"+
+		"  i=$((i+1))\n"+
+		"done\n"+
+		"printf '\\nDONE-%s\\n' MARK\n"), 0o700))
+
+	g.E(c.Write(proto.MsgInput, []byte(app+"\n")))
+	g.True(readUntil(nc, c, "DONE-MARK"))
+	settle(nc, c)
+
+	log, err := os.ReadFile(p.LogFile(sess.ID))
+	g.E(err)
+	g.Desc("log: %q", log).Len(log, 0)
+
+	ctl, err := proto.Dial(proto.SockAddr(p, sess.ID))
+	g.E(err)
+
+	defer ctl.Close()
+
+	cc := proto.NewConn(ctl)
+	g.E(cc.Write(proto.MsgScreen, nil))
+
+	screen := readReplay(g, ctl, cc) // reads until the daemon closes the connection
+	g.Has(screen, "frame 299\nstatus\nprompt\nDONE-MARK\n")
+	g.False(strings.Contains(screen, "frame 298"))
+}

@@ -9,45 +9,44 @@ import (
 	"sync"
 )
 
-// tailBytes bounds how much of the log file's end History reads to find the last
-// window of output. A window is one screen of lines, so this only has to be
+// tailBytes bounds how much of the log file's end History reads to find its last
+// lines. An attach wants one screenful of them, so this only has to be
 // comfortably more than a screenful of bytes — even a wide terminal's rows,
 // escape sequences and all, fit many times over. Reading a bounded tail (rather
 // than the whole file) keeps an attach cheap no matter how long the session has
 // been running.
 const tailBytes = 256 << 10 // 256 KiB
 
-// maxLogBytes caps a session's log file. The cooker already collapses most
-// redraws to nothing (an alt-screen app records nothing, a carriage-return
-// progress bar settles into one line), but a program that repaints on the main
-// screen with cursor motion — an inline TUI, a `clear` loop — re-records its
-// lines on every frame, and a session can run for weeks. Past the cap the log's
-// oldest output is dropped (see trim), keeping its newest half, so the file
-// stays between half and all of this size however much the session prints.
+// maxLogBytes caps a session's log file. Only what scrolls off the screen is
+// recorded (see screen), so redraws cost nothing, but a session can run for
+// weeks, and a program can still print without end (a log tail, a `clear` loop,
+// each clear keeping a screenful). Past the cap the log's oldest output is
+// dropped (see trim), keeping its newest half, so the file stays between half
+// and all of this size however much the session prints.
 const maxLogBytes = 64 << 20 // 64 MiB
 
 // trimBufSize is the chunk size trim copies the kept half of the log in.
 const trimBufSize = 64 << 10 // 64 KiB
 
-// scrollback records a session's output to an append-only log file, which is the
-// only place its history lives. Raw PTY output is cooked to its visible form
-// (see cooker) before being written, so the log holds clean text and color —
-// what a pager shows for [history], and what an attach replays — rather than the
-// raw control stream a terminal would act on. Only newline-terminated lines are
-// written; the in-progress line is held in the cooker and surfaced by History.
+// scrollback is a session's terminal state and history: the shadow screen raw
+// PTY output is fed to (see screen), and the append-only log file the lines
+// scrolling off that screen are recorded to — the only place the session's
+// history lives. The log holds clean text and color — what a pager shows for
+// [history] — rather than the raw control stream a terminal would act on; what
+// is still on screen is the screen's, until it scrolls off.
 type scrollback struct {
 	mu    sync.Mutex
 	path  string
 	log   *os.File
 	size  int64 // the log file's length, tracked so Write needn't stat per chunk
 	limit int64 // the size past which the log is trimmed (maxLogBytes)
-	cook  cooker
+	scr   *screen
 }
 
 // newScrollback opens (creating it if needed) the log file the session appends
-// its output to. It is opened for reading too, so History can read back the tail
-// it just wrote.
-func newScrollback(logPath string) (*scrollback, error) {
+// its history to, with a blank cols×rows screen in front of it. The file is
+// opened for reading too, so History can read back the tail it just wrote.
+func newScrollback(logPath string, cols, rows int) (*scrollback, error) {
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
@@ -60,22 +59,36 @@ func newScrollback(logPath string) (*scrollback, error) {
 		return nil, err
 	}
 
-	return &scrollback{path: logPath, log: f, size: info.Size(), limit: maxLogBytes}, nil
+	return &scrollback{
+		path: logPath, log: f, size: info.Size(), limit: maxLogBytes, scr: newScreen(cols, rows),
+	}, nil
 }
 
-// Write cooks a chunk of raw output to its visible form and appends the lines it
-// completes to the log; the unfinished last line stays in the cooker until a
-// newline settles it (or History reads it as the live tail). A write that takes
-// the log past its limit trims it (see trim).
+// Write feeds a chunk of raw output to the screen and appends the lines it
+// pushed off the screen to the log.
 func (s *scrollback) Write(p []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.log == nil {
+	s.record(s.scr.write(p))
+}
+
+// Resize changes the screen's size, recording any rows a shrink pushed off.
+func (s *scrollback) Resize(cols, rows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.record(s.scr.resize(cols, rows))
+}
+
+// record appends history to the log; a write that takes the log past its limit
+// trims it (see trim). The caller holds s.mu.
+func (s *scrollback) record(hist []byte) {
+	if s.log == nil || len(hist) == 0 {
 		return
 	}
 
-	n, _ := s.log.Write(s.cook.cook(p))
+	n, _ := s.log.Write(hist)
 	s.size += int64(n)
 
 	if s.size > s.limit {
@@ -144,8 +157,8 @@ func (s *scrollback) compact(from int64) error {
 	return nil
 }
 
-// History returns the last window of recorded output to replay on attach: the
-// final rows lines of the log file (see tailBytes for the read bound).
+// History returns the log's last rows lines (see tailBytes for the read bound):
+// the history an attach puts in the client's scrollback above the painted screen.
 func (s *scrollback) History(rows int) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,40 +180,54 @@ func (s *scrollback) History(rows int) []byte {
 		return nil
 	}
 
-	// The file holds only completed lines; append the in-progress one (the live
-	// prompt) so a replay shows it too.
-	tail := s.cook.tail()
-	window := make([]byte, 0, len(buf)+len(tail))
-	window = append(window, buf...)
-	window = append(window, tail...)
-
-	return tailLines(window, rows)
+	return tailLines(buf, rows)
 }
 
-// TermState returns the escape sequences that put a fresh terminal into the
-// session's current terminal state (nil when it is the default state), and
-// whether the session is on the alternate screen. It is replayed after the
-// history window on attach, so a still-running full-screen app gets back the
-// screen buffer and modes it set up (see termModes) — its content is then
-// rebuilt by the app itself (see Daemon.nudgeRepaint), since the alt screen is
-// deliberately not recorded.
-func (s *scrollback) TermState() (restore []byte, alt bool) {
+// Paint returns the escape stream that reproduces the session's screen on a
+// freshly reset client terminal of the screen's size (see screen.paint).
+func (s *scrollback) Paint() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.cook.modes.restore(), s.cook.modes.altOn()
+	return s.scr.paint()
 }
 
-// Clear discards the session's recorded history by truncating the log file in
-// place. The file stays open — it was opened with O_APPEND, so later writes land
-// at the new (zero) end — and the session keeps running; only its recorded past
-// is dropped, so nothing of it (say, a secret echoed to the terminal) can be
-// replayed on a later attach.
+// Snapshot renders what the main screen shows as history text (see
+// screen.snapshot): the part of the session's history not yet in the log.
+func (s *scrollback) Snapshot() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.scr.snapshot()
+}
+
+// Blank reports whether the main screen shows no text at all.
+func (s *scrollback) Blank() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return lastTextRow(s.scr.main) < 0
+}
+
+// Alt reports whether the session is on the alternate screen — inside a
+// full-screen app.
+func (s *scrollback) Alt() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.scr.onAlt
+}
+
+// Clear discards the session's recorded history: the log file is truncated in
+// place and the screen is blanked, so nothing of it (say, a secret echoed to the
+// terminal) can be paged or replayed on a later attach. The file stays open — it
+// was opened with O_APPEND, so later writes land at the new (zero) end — and the
+// session keeps running, its cursor, modes and screen buffer as they were.
 func (s *scrollback) Clear() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.cook.reset() // drop the in-progress line too, so nothing survives the wipe
+	s.scr.clearContent()
 
 	if s.log == nil {
 		return nil

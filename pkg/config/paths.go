@@ -85,9 +85,9 @@ func (p Paths) SessionFile(id string) string {
 	return filepath.Join(p.SessionDir(id), "meta.json")
 }
 
-// LogFile is the scrollback log path for a session id: the session's shell
-// output cooked to visible text and color by the daemon that records it, and the only
-// place its history lives.
+// LogFile is the scrollback log path for a session id: every line that scrolled
+// off the session's screen, as clean text and color, recorded by its daemon —
+// the only place its history lives.
 func (p Paths) LogFile(id string) string {
 	return filepath.Join(p.SessionDir(id), "std.log")
 }

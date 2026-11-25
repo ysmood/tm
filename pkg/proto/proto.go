@@ -50,12 +50,17 @@ const (
 	// attach; the daemon closes the connection once the wipe is done, so the sender
 	// can block on a read to know it happened. No payload.
 	MsgClear
+	// MsgScreen asks the daemon for what the session's main screen shows, rendered
+	// as history text: the part of the session's history that has not scrolled
+	// into its log yet. The sender does not attach; the daemon replies with
+	// Output frames and closes the connection, so the sender reads until EOF.
+	MsgScreen
 )
 
-// Attach is the payload of a MsgAttach frame. Replay asks the daemon to send the
-// last window of recorded output (one screen, sized by Rows) before the live
-// stream: what an attach or a switch wants, so the session's screen is there to
-// look at. Resuming a session the terminal is still showing (esc out of the menu
+// Attach is the payload of a MsgAttach frame. Replay asks the daemon to redraw
+// the session's screen — a screenful of history above it, sized by Rows —
+// before the live stream: what an attach or a switch wants, so the session's
+// screen is there to look at. Resuming a session the terminal is still showing (esc out of the menu
 // opened over it) clears it, since that screen never went away.
 type Attach struct {
 	Replay bool

@@ -5,15 +5,16 @@ import (
 	"strconv"
 )
 
-// termModes tracks the terminal state a session's running program has set up:
-// which screen buffer it is on and the DEC private modes it switched on. The
-// alt screen's *content* is deliberately not recorded (see cooker) — the log is
-// a history of the main screen — so this state is the only thing an attach can
-// use to hand the terminal back to a still-running full-screen app: restore
-// re-enters the alt screen and re-applies the modes, and the app itself is then
-// nudged to repaint (see Daemon.nudgeRepaint). Without it, a re-attach into a
-// running lazygit/vim/htop lands on the main screen with default modes, and the
-// app's incremental updates paint garbage over the replayed history.
+// termModes tracks the terminal state a session's running program has set up
+// that isn't on screen: which screen buffer it is on and the DEC private modes
+// it switched on (mouse reporting, keyboard protocols, bracketed paste, ...).
+// The screen (see screen) holds what is shown; this holds how the terminal
+// behaves, and an attach needs both to hand the terminal back to a
+// still-running program: restore re-enters the alt screen and re-applies the
+// modes (see screen.paint), and a full-screen app is then nudged to repaint
+// (see Daemon.nudgeRepaint). Without it, a re-attach into a running
+// lazygit/vim/htop lands with default modes, and the app's mouse and key input
+// arrive in the wrong encoding.
 //
 // The zero value is a terminal's default state.
 type termModes struct {
@@ -208,9 +209,6 @@ func (m *termModes) set(mode int, on bool) {
 		m.paste = on
 	}
 }
-
-// altOn reports whether the session is on the alternate screen.
-func (m termModes) altOn() bool { return m.altMode != 0 }
 
 // restore returns the escape sequences that take a terminal in its default
 // state to the tracked one, or nil when the state is the default. Entering the

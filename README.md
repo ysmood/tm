@@ -35,7 +35,7 @@ override with the `TM_HOME` environment variable), one directory per session:
 
 ```
 ~/.tm/sessions/<session_id>/meta.json    # name, namespace, shell, cwd, pid
-~/.tm/sessions/<session_id>/std.log      # the session's scrollback (its shell's raw output)
+~/.tm/sessions/<session_id>/std.log      # the session's history: every line that scrolled off its screen
 ~/.tm/sessions/<session_id>/daemon.log   # the session's background process's own diagnostics
 ~/.tm/sessions/<session_id>/daemon.lock  # locked while the background process runs
 ```
@@ -87,9 +87,9 @@ tm then prints `[tm killed session <name>]` above the menu, so the change stays 
 The command is `[clear history]`. You just type words like `clear`, `ch`, `[c`, etc. and hit enter.
 
 Pick the session whose history to wipe — including the one you are currently inside, marked
-`current`. The session's log file is truncated, and that log is the only place its history lives:
-nothing is buffered in memory. The session keeps running; only its recorded past is gone, so
-nothing of it can be replayed on a later attach.
+`current`. The session's log file is truncated and the copy of its screen tm keeps is blanked, so
+nothing of its past is left on disk or in memory. The session keeps running; only its recorded past
+is gone, so nothing of it can be paged or replayed on a later attach.
 
 This is handy when a secret — a password, a token — was echoed to the terminal: clearing the
 history keeps it from leaking through the session's log file or a later replay.
@@ -104,13 +104,20 @@ your scrollback.
 
 ### View a session's history
 
-The command is `[history]`. You just type words like `history`, `[h`, etc. and hit enter.
+The command is `[history]`. You just type words like `history`, `[hi`, etc. and hit enter.
 
 Pick the session whose recorded output you want to read — including the one you are currently
-inside, marked `current`. tm opens its log file in `less -R`, the same way `git show` opens its
-output in a pager, so the whole scrollback is scrollable and searchable and the log's colors are
-preserved. The session keeps running and nothing on your screen is disturbed; quit the pager (`q`)
-to return to the menu.
+inside, marked `current`. tm opens it in `less -R`, the same way `git show` opens its output in a
+pager, so the whole scrollback is scrollable and searchable and its colors are preserved: first the
+session's log file, then what its screen shows right now. The session keeps running and nothing on
+your screen is disturbed; quit the pager (`q`) to return to the menu.
+
+History is what your terminal's own scrollback would hold. tm keeps a copy of each session's
+screen — a small terminal emulator, fed the same output your terminal gets — and a line is
+recorded only when it scrolls off the top of that screen, or when the screen is cleared (`clear`
+and Ctrl-L keep what was on screen, as tmux does). A program that redraws in place — a shell
+prompt, a progress bar, an inline UI like Claude Code repainting itself — changes the screen but
+adds nothing to the history, and a full-screen app (vim, htop, ...) never does.
 
 A session's log is capped at 64 MiB, so a session that prints forever can't fill the disk: once the
 log grows past that, its oldest lines are dropped, keeping the newest 32 MiB.
@@ -119,9 +126,11 @@ log grows past that, its oldest lines are dropped, keeping the newest 32 MiB.
 
 Each session will be listed with its name, just type in the name of the session you want to attach to and hit enter. You will be attached to that session.
 
-Attaching redraws the last window of the session's output — one screenful, read straight from its
-log file — so you land on the screen you left, however long the session has been running. The rest
-of the history stays in the log file, where `tm` never has to stream it to your terminal.
+Attaching redraws the session's screen exactly as it stands — text, colors, cursor position — with
+a screenful of its history above it in your terminal's scrollback, so you land on the screen you
+left, however long the session has been running, and a program in the middle of redrawing itself
+carries on from the right place. The rest of the history stays in the log file, where `tm` never
+has to stream it to your terminal.
 
 If the session is inside a full-screen app (lazygit, vim, htop, ...), attaching hands the terminal
 back to it: the app's screen and modes are restored and the app itself is prompted to repaint, so

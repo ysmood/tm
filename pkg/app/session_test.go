@@ -4,6 +4,7 @@ package app_test
 
 import (
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -154,4 +155,44 @@ func TestReattachReplaysHistoryPastClear(t *testing.T) {
 
 	second.write(keyMenu)
 	second.waitExit()
+}
+
+// TestHistoryShowsScreen drives the real binary: [history] pages the session's
+// log followed by what its screen shows now, so output that hasn't scrolled off
+// the screen yet — not in the log — is still in the history.
+func TestHistoryShowsScreen(t *testing.T) {
+	e := setupTM(t)
+	e.spawn("hst")
+
+	first := e.attachRelay("hst")
+	first.write("echo ON-SCREEN-$((1+1))" + keyEnter) // the echo of the input can't match
+	first.must("ON-SCREEN-2")
+	first.write(keyMenu) // detach; the session keeps running
+	first.waitExit()
+
+	log, err := os.ReadFile(e.st.Paths().LogFile("hst"))
+	e.E(err)
+	e.Desc("the marker must still be on screen, not in the log").
+		False(strings.Contains(string(log), "ON-SCREEN-2"))
+
+	// less refuses to page on a terminal it can't identify (it stops to warn
+	// first), and the test environment may have no TERM; a user's terminal has one.
+	e.env = append(e.env, "TERM=xterm-256color")
+
+	tm := e.start()
+	tm.must(renameRow) // the menu is up with its command list
+
+	chooser := tm.mark()
+	tm.write("[hi" + keyEnter) // fuzzy-filter to [history] (not [clear history]) and select it
+	tm.mustFrom(chooser, "hst")
+
+	pager := tm.mark()
+	tm.write(keyEnter) // pick the session -> less opens on its history
+	tm.mustFrom(pager, "ON-SCREEN-2")
+
+	menu := tm.mark()
+	tm.write("q") // quit less, back to the menu
+	tm.mustFrom(menu, renameRow)
+	tm.write(keyEsc)
+	tm.waitExit()
 }

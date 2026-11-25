@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -539,24 +541,64 @@ func viewSessionHistory(p config.Paths, id string) string {
 	return ""
 }
 
-// viewHistory pages a session's recorded scrollback log in less, connected to
-// the terminal, and returns once the user quits the pager. It is how [history]
-// shows a session's past output — the std.log the daemon records — the way
-// `git show` opens its output in a pager. The daemon cooks that log to visible
-// text and color (the daemon cooks it as it records), so it pages cleanly; the -R flag
-// passes its ANSI color escapes through so the history renders in color rather
-// than as literal escape sequences.
+// viewHistory pages a session's history in less, connected to the terminal, and
+// returns once the user quits the pager. It is how [history] shows a session's
+// past output, the way `git show` opens its output in a pager: the std.log the
+// daemon records (every line that scrolled off the session's screen), followed
+// by what the screen shows now (see screenSnapshot), so the pager ends where the
+// session is. Both are clean text and color; the -R flag passes the color
+// escapes through so the history renders in color rather than as literal escape
+// sequences. A session whose daemon is gone has only its log.
 //
 // It can only run once the menu (or relay) has released the terminal: less
-// takes it over wholesale. The log file always exists for a session in the
-// store — the daemon creates it on spawn — so a missing file is not special-cased.
+// takes it over wholesale, reading keys from the terminal itself since its input
+// is the history.
 func viewHistory(p config.Paths, id string) error {
-	cmd := exec.Command("less", "-R", p.LogFile(id))
-	cmd.Stdin = os.Stdin
+	log, err := os.Open(p.LogFile(id))
+	if err != nil {
+		return err
+	}
+
+	defer func() { _ = log.Close() }()
+
+	cmd := exec.Command("less", "-R")
+	cmd.Stdin = io.MultiReader(log, bytes.NewReader(screenSnapshot(p, id)))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
+}
+
+// screenSnapshot asks a session's daemon for what its main screen shows, as
+// history text (see proto.MsgScreen) — nil if the daemon can't be reached or
+// doesn't answer within killTimeout.
+func screenSnapshot(p config.Paths, id string) []byte {
+	nc, err := proto.Dial(proto.SockAddr(p, id))
+	if err != nil {
+		return nil
+	}
+
+	defer func() { _ = nc.Close() }()
+
+	conn := proto.NewConn(nc)
+	if conn.Write(proto.MsgScreen, nil) != nil {
+		return nil
+	}
+
+	_ = nc.SetReadDeadline(time.Now().Add(killTimeout))
+
+	var snap []byte
+
+	for {
+		mt, payload, err := conn.Read()
+		if err != nil {
+			return snap // the daemon closes the connection once it has sent it all
+		}
+
+		if mt == proto.MsgOutput {
+			snap = append(snap, payload...)
+		}
+	}
 }
 
 // announceAttach writes the terminal reset and status notice for moving the relay
