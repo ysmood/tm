@@ -22,12 +22,27 @@ func renderRow(dst []byte, cells []cell, continues bool) ([]byte, int) {
 		end--
 	}
 
-	var cur []byte
+	var (
+		cur  []byte
+		link string
+	)
 
 	for i := range end {
 		c := &cells[i]
 		if c.width == 0 {
 			continue // a wide character's right half: its left half drew it
+		}
+
+		if c.link != link {
+			if link != "" {
+				dst = append(dst, linkClose...)
+			}
+
+			if c.link != "" {
+				dst = openLink(dst, c.link)
+			}
+
+			link = c.link
 		}
 
 		if !bytes.Equal(c.style, cur) {
@@ -50,7 +65,23 @@ func renderRow(dst []byte, cells []cell, continues bool) ([]byte, int) {
 		dst = append(dst, sgrReset...)
 	}
 
+	if link != "" {
+		dst = append(dst, linkClose...)
+	}
+
 	return dst, end
+}
+
+// linkClose ends an OSC 8 hyperlink. Each rendered row closes its own, so a
+// link never runs on past its row in a pager or a replay.
+var linkClose = []byte("\x1b]8;;\x1b\\")
+
+// openLink appends the OSC 8 sequence opening link ("params;uri").
+func openLink(dst []byte, link string) []byte {
+	dst = append(dst, "\x1b]8;"...)
+	dst = append(dst, link...)
+
+	return append(dst, "\x1b\\"...)
 }
 
 // snapshot renders the main screen as history text — what would be recorded if
@@ -126,6 +157,10 @@ func (s *screen) paint() []byte {
 
 	if s.decGfx {
 		b = append(b, "\x1b(0"...)
+	}
+
+	if s.link != "" {
+		b = openLink(b, s.link) // the program is mid-link: its next text belongs to it
 	}
 
 	return append(b, s.style...)

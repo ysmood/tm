@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"unicode/utf8"
 
 	"github.com/rivo/uniseg"
@@ -21,6 +22,11 @@ const (
 	maxRows = 1024
 
 	tabWidth = 8
+
+	// maxLinkBytes bounds an OSC 8 hyperlink's parameters and URI. A longer one
+	// is dropped (its text stays, unlinked): nothing real is that long, and every
+	// row it spans re-emits it.
+	maxLinkBytes = 8 << 10 // 8 KiB
 )
 
 // screen is the session's shadow terminal: a model of what the session's
@@ -60,6 +66,7 @@ type screen struct {
 	sgr   sgrState
 	style []byte // sgr rendered, taken by new cells (shared, immutable; nil = default)
 	bg    []byte // the background part of style, taken by erased cells
+	link  string // the OSC 8 hyperlink new cells take, as "params;uri" ("" = none)
 
 	saved    savedCursor // DECSC / SCOSC / ?1048
 	altSaved savedCursor // saved by ?1049 on entering the alt screen
@@ -91,6 +98,7 @@ type row struct {
 type cell struct {
 	text  string // the grapheme shown; "" is a blank
 	style []byte // rendered SGR (shared, immutable; nil = default)
+	link  string // OSC 8 hyperlink as "params;uri" ("" = none)
 	width uint8  // 1, or 2 for a wide character's left half; 0 is its right half
 }
 
@@ -100,7 +108,7 @@ var blank = cell{width: 1}
 // isPad reports whether c is an unstyled blank or space: padding a row needn't
 // carry. (A printed space and an erased cell look the same.)
 func (c *cell) isPad() bool {
-	return (c.text == "" || c.text == " ") && c.width == 1 && c.style == nil
+	return (c.text == "" || c.text == " ") && c.width == 1 && c.style == nil && c.link == ""
 }
 
 // savedCursor is the state DECSC saves and DECRC restores.
@@ -327,11 +335,11 @@ func (s *screen) put(text string, width int) {
 	s.splitWide(r, s.x)
 	s.splitWide(r, s.x+width)
 
-	c := cell{text: text, style: s.style, width: uint8(width)}
+	c := cell{text: text, style: s.style, link: s.link, width: uint8(width)}
 	r.cells[s.x] = c
 
 	if width == 2 {
-		r.cells[s.x+1] = cell{style: s.style}
+		r.cells[s.x+1] = cell{style: s.style, link: s.link}
 	}
 
 	s.last = c
@@ -422,6 +430,8 @@ func (s *screen) escape(seq []byte) {
 	switch seq[1] {
 	case '[':
 		s.csi(seq)
+	case ']':
+		s.osc(seq)
 	case '7':
 		s.saveCursor(&s.saved)
 	case '8':
@@ -442,6 +452,36 @@ func (s *screen) escape(seq []byte) {
 		if len(seq) == 3 {
 			s.decGfx = seq[2] == '0'
 		}
+	}
+}
+
+// osc acts on an OSC sequence; only OSC 8 — a hyperlink, "\x1b]8;params;uri"
+// opening it and an empty URI closing it — puts anything on screen: the text
+// printed while it is open carries it. Titles, colors, clipboard and the rest
+// are the client terminal's business.
+func (s *screen) osc(seq []byte) {
+	body := seq[2:]
+
+	switch {
+	case len(body) > 0 && body[len(body)-1] == bel:
+		body = body[:len(body)-1]
+	case len(body) > 1 && body[len(body)-2] == esc && body[len(body)-1] == '\\':
+		body = body[:len(body)-2]
+	}
+
+	link, ok := bytes.CutPrefix(body, []byte("8;"))
+	if !ok {
+		return
+	}
+
+	_, uri, ok := bytes.Cut(link, []byte(";"))
+
+	switch {
+	case !ok:
+	case len(uri) == 0 || len(link) > maxLinkBytes:
+		s.link = ""
+	default:
+		s.link = string(link)
 	}
 }
 

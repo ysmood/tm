@@ -338,12 +338,15 @@ func (s *screen) clearContent() {
 	s.clearRows(s.alt)
 }
 
-// resize changes the screen's size and returns the history it produced. Rows
-// are not reflowed. Shrinking drops blank rows from the bottom first, then
-// scrolls rows off the top — into history on the main screen — so the cursor
-// stays on screen; growing adds blank rows at the bottom. Rows are truncated or
-// padded to the new width. The scroll region resets to the whole screen, as
-// terminals do.
+// resize changes the screen's size and returns the history it produced, as a
+// terminal that reflows does. On a width change the main screen's logical lines
+// — rows joined by autowrap — are re-wrapped at the new width, the cursor
+// carried along to the same character (see reflow); the alt screen's rows are
+// just cut or padded, since a full-screen app repaints for its new size anyway.
+// Then each buffer is fitted to the new height: shrinking drops blank rows from
+// the bottom first, then scrolls rows off the top — into history on the main
+// screen — so the cursor stays on screen; growing adds blank rows at the
+// bottom. The scroll region resets to the whole screen, as terminals do.
 func (s *screen) resize(cols, rows int) []byte {
 	s.out = s.out[:0]
 
@@ -354,23 +357,32 @@ func (s *screen) resize(cols, rows int) []byte {
 
 	// The buffer not on display has no live cursor: the main screen's is the one
 	// ?1049 saved; the alt screen's content is stale until it is shown again.
-	mainY, altY := s.y, 0
+	mc := cursorPos{x: s.x, y: s.y, pending: s.wrapNext}
 	if s.onAlt {
-		mainY, altY = s.altSaved.y, s.y
+		mc = cursorPos{x: s.altSaved.x, y: s.altSaved.y, pending: s.altSaved.wrapNext}
+	}
+
+	if cols != s.cols {
+		s.main, mc = reflow(s.main, cols, mc)
 	}
 
 	var cut int
 
-	s.main, cut = s.resizeRows(s.main, cols, rows, mainY, true)
-	if !s.onAlt {
-		s.y -= cut
-	} else {
-		s.altSaved.y = max(s.altSaved.y-cut, 0)
+	s.main, cut = s.fitRows(s.main, cols, rows, mc.y, true)
+	mc.y = max(mc.y-cut, 0)
+
+	altY := 0
+	if s.onAlt {
+		altY = s.y
 	}
 
-	s.alt, cut = s.resizeRows(s.alt, cols, rows, altY, false)
+	s.alt, cut = s.fitRows(s.alt, cols, rows, altY, false)
+
 	if s.onAlt {
 		s.y -= cut
+		s.altSaved.x, s.altSaved.y, s.altSaved.wrapNext = mc.x, mc.y, mc.pending
+	} else {
+		s.x, s.y, s.wrapNext = mc.x, mc.y, mc.pending
 	}
 
 	s.cols, s.rows = cols, rows
@@ -382,16 +394,145 @@ func (s *screen) resize(cols, rows int) []byte {
 
 	s.top, s.bot = 0, rows-1
 	s.x, s.y = min(s.x, cols-1), min(max(s.y, 0), rows-1)
-	s.wrapNext = false
 	s.saved.x, s.saved.y = min(s.saved.x, cols-1), min(s.saved.y, rows-1)
 
 	return s.out
 }
 
-// resizeRows fits buffer g to cols×rows, returning it and how many rows it
-// dropped from the top. cy is the buffer's cursor row; main says whether rows
-// dropped from the top are history.
-func (s *screen) resizeRows(g []row, cols, rows, cy int, main bool) ([]row, int) {
+// cursorPos is a cursor carried through a reflow: its cell, and whether it is
+// past that cell waiting to wrap (see screen.wrapNext).
+type cursorPos struct {
+	x, y    int
+	pending bool
+}
+
+// reflow re-wraps g's logical lines at cols, returning the new rows (any number
+// of them) and where cur lands: on the same character it was on.
+func reflow(g []row, cols int, cur cursorPos) ([]row, cursorPos) {
+	out := make([]row, 0, len(g))
+	at := cur
+
+	var line []cell
+
+	for y := 0; y < len(g); {
+		end := y
+		for end < len(g)-1 && g[end].wrapped {
+			end++
+		}
+
+		line = line[:0]
+		off := -1
+
+		for r := y; r <= end; r++ {
+			if r == cur.y {
+				off = len(line) + cur.x
+			}
+
+			cells := g[r].cells
+			if r < end {
+				cells = trimUnwritten(cells) // the gap a wide character left wrapping early
+			}
+
+			line = append(line, cells...)
+		}
+
+		n := len(line)
+		for n > 0 && isFill(&line[n-1]) {
+			n--
+		}
+
+		line = line[:n]
+		for len(line) <= off { // keep the cursor's cell, past the text or not
+			line = append(line, blank)
+		}
+
+		var cx, cy int
+
+		out, cx, cy = wrapLine(out, line, cols, off)
+
+		if off >= 0 {
+			at = cursorPos{x: cx, y: cy}
+			if cur.pending {
+				if cx+1 < cols {
+					at.x = cx + 1
+				} else {
+					at.pending = true
+				}
+			}
+		}
+
+		y = end + 1
+	}
+
+	return out, at
+}
+
+// wrapLine appends cells as rows of cols, wrapping a wide character that won't
+// fit in a row's last column whole onto the next, as printing does. It returns
+// the rows and the position cell off landed at (if off >= 0).
+func wrapLine(out []row, cells []cell, cols, off int) ([]row, int, int) {
+	r := row{cells: blankCells(cols)}
+	x, cx, cy := 0, 0, 0
+
+	for i := range cells {
+		c := cells[i]
+		if c.width == 0 {
+			if i == off { // the cursor sat on a wide character's right half
+				cx = min(x-1, cols-1)
+			}
+
+			continue // placed with its left half
+		}
+
+		w := int(c.width)
+		if w == 2 && cols < 2 {
+			c.width, w = 1, 1
+		}
+
+		if x+w > cols {
+			r.wrapped = true
+			out = append(out, r)
+			r = row{cells: blankCells(cols)}
+			x = 0
+		}
+
+		if i == off {
+			cx, cy = x, len(out)
+		}
+
+		r.cells[x] = c
+		if w == 2 {
+			r.cells[x+1] = cell{style: c.style, link: c.link}
+		}
+
+		x += w
+	}
+
+	return append(out, r), cx, cy
+}
+
+// trimUnwritten drops the cells at the end of a wrapped row that nothing was
+// written to.
+func trimUnwritten(cells []cell) []cell {
+	n := len(cells)
+	for n > 0 && cells[n-1].text == "" && cells[n-1].width == 1 && cells[n-1].link == "" {
+		n--
+	}
+
+	return cells[:n]
+}
+
+// isFill reports whether c is filler at the end of a line, not text: padding, or
+// an erased cell however it is colored — a background fill sized to the old width
+// would only wrap into a row of its own at a narrower one.
+func isFill(c *cell) bool {
+	return c.isPad() || (c.text == "" && c.width == 1 && c.link == "")
+}
+
+// fitRows fits buffer g to cols×rows, returning it and how many rows it dropped
+// from the top. cy is the buffer's cursor row; main says whether rows dropped
+// from the top are history.
+func (s *screen) fitRows(g []row, cols, rows, cy int, main bool) ([]row, int) {
 	cut := 0
 
 	for len(g) > rows && len(g)-1 > cy && lastTextRow(g[len(g)-1:]) < 0 {

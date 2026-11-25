@@ -117,7 +117,9 @@ screen — a small terminal emulator, fed the same output your terminal gets —
 recorded only when it scrolls off the top of that screen, or when the screen is cleared (`clear`
 and Ctrl-L keep what was on screen, as tmux does). A program that redraws in place — a shell
 prompt, a progress bar, an inline UI like Claude Code repainting itself — changes the screen but
-adds nothing to the history, and a full-screen app (vim, htop, ...) never does.
+adds nothing to the history, and a full-screen app (vim, htop, ...) never does. Like a reflowing
+terminal, resizing re-wraps long lines to the new width, and a wrapped line is recorded as the one
+line it is. Hyperlinks (OSC 8) are kept with their text.
 
 A session's log is capped at 64 MiB, so a session that prints forever can't fill the disk: once the
 log grows past that, its oldest lines are dropped, keeping the newest 32 MiB.
@@ -126,7 +128,7 @@ log grows past that, its oldest lines are dropped, keeping the newest 32 MiB.
 
 Each session will be listed with its name, just type in the name of the session you want to attach to and hit enter. You will be attached to that session.
 
-Attaching redraws the session's screen exactly as it stands — text, colors, cursor position — with
+Attaching redraws the session's screen exactly as it stands — text, colors, links, cursor position — with
 a screenful of its history above it in your terminal's scrollback, so you land on the screen you
 left, however long the session has been running, and a program in the middle of redrawing itself
 carries on from the right place. The rest of the history stays in the log file, where `tm` never

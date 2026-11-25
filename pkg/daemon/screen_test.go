@@ -219,19 +219,19 @@ func TestScreenEditing(t *testing.T) {
 		return s.shown()[0]
 	}
 
-	g.Eq(row("abcdef\x1b[3G\x1b[2@"), "ab  cdef")  // ICH
-	g.Eq(row("abcdef\x1b[3G\x1b[2P"), "abef")      // DCH
-	g.Eq(row("abcdef\x1b[3G\x1b[2X"), "ab  ef")    // ECH
-	g.Eq(row("abcdef\x1b[3G\x1b[K"), "ab")         // EL 0
-	g.Eq(row("abcdef\x1b[3G\x1b[1K"), "   def")    // EL 1
-	g.Eq(row("abcdef\x1b[2K"), "")                 // EL 2
+	g.Eq(row("abcdef\x1b[3G\x1b[2@"), "ab  cdef")   // ICH
+	g.Eq(row("abcdef\x1b[3G\x1b[2P"), "abef")       // DCH
+	g.Eq(row("abcdef\x1b[3G\x1b[2X"), "ab  ef")     // ECH
+	g.Eq(row("abcdef\x1b[3G\x1b[K"), "ab")          // EL 0
+	g.Eq(row("abcdef\x1b[3G\x1b[1K"), "   def")     // EL 1
+	g.Eq(row("abcdef\x1b[2K"), "")                  // EL 2
 	g.Eq(row("abcdef\x1b[3G\x1b[4hXY"), "abXYcdef") // insert mode
-	g.Eq(row("ab\tc"), "ab      c")                // tab stops
-	g.Eq(row("abc\bX"), "abX")                     // backspace
-	g.Eq(row("x\x1b[3b"), "xxxx")                  // REP
+	g.Eq(row("ab\tc"), "ab      c")                 // tab stops
+	g.Eq(row("abc\bX"), "abX")                      // backspace
+	g.Eq(row("x\x1b[3b"), "xxxx")                   // REP
 	g.Eq(row("\x1b(0lqqk\x1b(Bq"), "┌──┐q")         // DEC line drawing
-	g.Eq(row("abc\x1b7\x1b[5GX\x1b8Y"), "abcYX")   // save/restore cursor
-	g.Eq(row("\x1b[5Ca\x1b[3Db\x1b[Gc"), "c  b a") // relative moves
+	g.Eq(row("abc\x1b7\x1b[5GX\x1b8Y"), "abcYX")    // save/restore cursor
+	g.Eq(row("\x1b[5Ca\x1b[3Db\x1b[Gc"), "c  b a")  // relative moves
 }
 
 // Autowrap off overwrites the last column instead of wrapping.
@@ -261,7 +261,7 @@ func TestScreenFullReset(t *testing.T) {
 }
 
 // Shrinking drops blank rows from the bottom before scrolling rows off the top
-// (into history), keeping the cursor's row on screen; widths are truncated.
+// (into history), keeping the cursor's row on screen.
 func TestScreenResize(t *testing.T) {
 	g := got.T(t)
 
@@ -274,10 +274,12 @@ func TestScreenResize(t *testing.T) {
 	g.Eq(s.shown(), []string{"c", "d"})
 	g.Eq(s.y, 1)
 
+	// A wide character that no longer fits re-wraps whole onto the next row,
+	// and the cursor after it moves along.
 	s, _ = feed(10, 2, "abcdefＡ")
 	s.resize(7, 3)
-	g.Eq(s.shown(), []string{"abcdef", "", ""})
-	g.Eq(s.x, 6)
+	g.Eq(s.shown(), []string{"abcdef", "Ａ", ""})
+	g.Eq([]int{s.x, s.y}, []int{2, 1})
 
 	// The alt screen's rows are never history, however the size changes.
 	s, _ = feed(10, 4, "\x1b[?1049ha\r\nb\r\nc\r\nd")
@@ -301,6 +303,7 @@ func TestScreenPaintRoundTrip(t *testing.T) {
 		g.Eq([]int{copied.x, copied.y, copied.top, copied.bot}, []int{s.x, s.y, s.top, s.bot})
 		g.Eq(copied.onAlt, s.onAlt)
 		g.Eq(copied.style, s.style)
+		g.Eq(copied.link, s.link)
 	}
 
 	check("plain\r\n\x1b[1;31mred\x1b[0m and ＡＢ\r\n$ ")
@@ -309,6 +312,7 @@ func TestScreenPaintRoundTrip(t *testing.T) {
 	check("a\r\nb\r\n\x1b[2;3r\x1b[3;2H\x1b[32m")
 	check("$ lazygit\r\n\x1b[?1049h\x1b[?25l\x1b[2;3HPANEL\x1b[4;1Hstatus")
 	check("abc\x1b7\x1b[4;1H")
+	check("go \x1b]8;;https://example.com\x1b\\here, still in the link")
 }
 
 // Restoring a full-screen app puts the client's cursor where the main screen's
@@ -352,4 +356,90 @@ func TestScreenSplitSequences(t *testing.T) {
 	s = newScreen(10, 2)
 	s.write([]byte("\x1b]" + strings.Repeat("x", maxHeldBytes+1)))
 	g.Len(s.held, 0)
+}
+
+// A width change re-wraps the main screen's logical lines, as a reflowing
+// terminal does: narrowing and widening back restores the screen, the cursor
+// riding along on its character.
+func TestScreenReflow(t *testing.T) {
+	g := got.T(t)
+
+	s, _ := feed(10, 4, "0123456789abcde\r\nshort\r\n$ ")
+	orig := s.shown()
+	g.Eq(orig, []string{"0123456789", "abcde", "short", "$"})
+
+	g.Eq(string(s.resize(5, 6)), "")
+	g.Eq(s.shown(), []string{"01234", "56789", "abcde", "short", "$", ""})
+	g.Eq([]int{s.x, s.y}, []int{2, 4})
+
+	g.Eq(string(s.resize(10, 4)), "")
+	g.Eq(s.shown(), orig)
+	g.Eq([]int{s.x, s.y}, []int{2, 3})
+
+	// A cursor waiting to wrap at the edge moves on past its character.
+	s, _ = feed(5, 3, "abcde")
+	s.resize(10, 3)
+	s.write([]byte("f"))
+	g.Eq(s.shown(), []string{"abcdef", "", ""})
+}
+
+// Rows a narrowing pushes off the top are history, and a logical line split by
+// the push is still recorded as one line once the rest of it scrolls off.
+func TestScreenReflowPushesHistory(t *testing.T) {
+	g := got.T(t)
+
+	s, _ := feed(10, 3, "0123456789abc\r\n$ ")
+
+	hist := string(s.resize(5, 3))
+	g.Eq(hist, "01234")
+	g.Eq(s.shown(), []string{"56789", "abc", "$"})
+
+	hist += string(s.write([]byte("\r\n\r\n\r\n")))
+	g.Eq(hist, "0123456789abc\n$\n")
+}
+
+// The alt screen is cut, not reflowed — its app repaints for the new size —
+// while the main screen beneath it reflows around the cursor the app's
+// alt-screen switch saved.
+func TestScreenReflowUnderAltScreen(t *testing.T) {
+	g := got.T(t)
+
+	s, _ := feed(10, 3, "0123456789abc\r\n$ \x1b[?1049h\x1b[H0123456789")
+	s.resize(5, 5)
+	g.Eq(s.shown(), []string{"01234", "", "", "", ""})
+
+	s.write([]byte("\x1b[?1049l"))
+	g.Eq(s.shown(), []string{"01234", "56789", "abc", "$", ""})
+	g.Eq([]int{s.x, s.y}, []int{2, 3})
+}
+
+// OSC 8 hyperlinks stay on the text they were printed with: in history, on
+// screen, across a wrap (each row closes its own), and through a repaint of a
+// program still inside one. Other OSCs (a title) put nothing on screen, and an
+// oversized link is dropped, its text kept.
+func TestScreenHyperlinks(t *testing.T) {
+	g := got.T(t)
+
+	const (
+		linkOpen = "\x1b]8;;https://example.com\x1b\\"
+		linkEnd  = "\x1b]8;;\x1b\\"
+	)
+
+	_, hist := feed(20, 2, "see "+linkOpen+"docs"+linkEnd+" now\r\n", "\r\n")
+	g.Eq(hist, "see "+linkOpen+"docs"+linkEnd+" now\n")
+
+	s, _ := feed(5, 2, "\x1b]8;id=1;http://x\aabcdefg")
+	g.Eq(s.shown(), []string{
+		"\x1b]8;id=1;http://x\x1b\\abcde" + linkEnd,
+		"\x1b]8;id=1;http://x\x1b\\fg" + linkEnd,
+	})
+
+	s.resize(10, 2)
+	g.Eq(s.shown(), []string{"\x1b]8;id=1;http://x\x1b\\abcdefg" + linkEnd, ""})
+
+	s, _ = feed(10, 1, "\x1b]0;title\ax")
+	g.Eq(s.shown()[0], "x")
+
+	s, _ = feed(10, 1, "\x1b]8;;"+strings.Repeat("u", maxLinkBytes)+"\x1b\\x")
+	g.Eq(s.shown()[0], "x")
 }
