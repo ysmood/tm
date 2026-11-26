@@ -121,8 +121,8 @@ adds nothing to the history, and a full-screen app (vim, htop, ...) never does. 
 terminal, resizing re-wraps long lines to the new width, and a wrapped line is recorded as the one
 line it is. Hyperlinks (OSC 8) are kept with their text.
 
-A session's log is capped at 64 MiB, so a session that prints forever can't fill the disk: once the
-log grows past that, its oldest lines are dropped, keeping the newest 32 MiB.
+A session's log is capped at 500 MiB, so a session that prints forever can't fill the disk: once the
+log grows past that, its oldest lines are dropped, keeping the newest 250 MiB.
 
 ### Attach to a session
 

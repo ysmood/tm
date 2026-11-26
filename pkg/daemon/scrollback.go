@@ -10,12 +10,12 @@ import (
 )
 
 // tailBytes bounds how much of the log file's end History reads to find its last
-// lines. An attach wants one screenful of them, so this only has to be
-// comfortably more than a screenful of bytes — even a wide terminal's rows,
-// escape sequences and all, fit many times over. Reading a bounded tail (rather
-// than the whole file) keeps an attach cheap no matter how long the session has
-// been running.
-const tailBytes = 256 << 10 // 256 KiB
+// lines. An attach wants one screenful of them, so this only has to be more than
+// a screenful of bytes — escape sequences and all, which output dense with
+// colors, links and wide rows inflates well past the visible text. Reading a
+// bounded tail (rather than the whole file) keeps an attach's cost fixed no
+// matter how long the session has been running.
+const tailBytes = 10 << 20 // 10 MiB
 
 // maxLogBytes caps a session's log file. Only what scrolls off the screen is
 // recorded (see screen), so redraws cost nothing, but a session can run for
@@ -23,7 +23,7 @@ const tailBytes = 256 << 10 // 256 KiB
 // each clear keeping a screenful). Past the cap the log's oldest output is
 // dropped (see trim), keeping its newest half, so the file stays between half
 // and all of this size however much the session prints.
-const maxLogBytes = 64 << 20 // 64 MiB
+const maxLogBytes = 500 << 20 // 500 MiB
 
 // trimBufSize is the chunk size trim copies the kept half of the log in.
 const trimBufSize = 64 << 10 // 64 KiB
