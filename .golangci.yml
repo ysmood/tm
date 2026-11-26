@@ -14,9 +14,10 @@ linters:
     # leaving these on only prints a deprecation warning on every run.
     - gomodguard
     - wsl
+    - exhaustruct # superseded by exhaustruct_v5, disabled below
     # Stylistic linters that fight idiomatic Go / the got test framework:
     - varnamelen # short receiver/loop names (g, m, c, b) are idiomatic here
-    - exhaustruct # not every struct literal should set every field
+    - exhaustruct_v5 # not every struct literal should set every field
     - mnd # buffer sizes, file perms, and timeouts read fine inline
     - nonamedreturns # named returns document multi-value helpers
     - ireturn # tea.Model / interface returns are required by APIs

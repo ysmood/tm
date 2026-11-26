@@ -36,4 +36,4 @@ jobs:
           go-version-file: go.mod
       # The same pinned version AGENTS.md tells contributors to run locally, so CI
       # and a local run agree on what passes.
-      - run: go run github.com/ysmood/golangci-lint@latest -v 2.12.2
+      - run: go run github.com/ysmood/golangci-lint@latest -v 2.15.0

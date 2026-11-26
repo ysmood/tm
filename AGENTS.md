@@ -21,7 +21,7 @@ env), and synchronize on output (`term.must`, `term.mustFrom`) rather than on a 
 ## Linting
 
 ```bash
-go run github.com/ysmood/golangci-lint@latest -v 2.12.2
+go run github.com/ysmood/golangci-lint@latest -v 2.15.0
 ```
 
-It will use golangci-lint v2.12.2 to lint the project.
+It will use golangci-lint v2.15.0 to lint the project.
