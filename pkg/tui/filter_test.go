@@ -41,6 +41,7 @@ func TestPaletteFuzzyRanksCorrectly(t *testing.T) {
 		cmdDetachSession: {"detach", "ds", "/d", "/ds"},
 		cmdUseNamespace:  {"namespace", "un", "/u"},
 		cmdDropNamespace: {"drop", "dn", "/dn"},
+		cmdStatus:        {"status", "st", "/st", "/s"},
 		cmdHelp:          {"help", "h", "/h"},
 	} {
 		for _, q := range queries {

@@ -190,6 +190,19 @@ Pick the namespace to remove. Its sessions are not touched — they keep running
 `default` namespace, so nothing is lost by dropping the group they were grouped under. The
 `default` namespace itself can't be dropped, so it is not offered.
 
+### Show status
+
+The command is `/status`. You just type words like `status`, `st`, `/s`, etc. and hit enter.
+
+It shows an overview of tm as a whole: how many sessions are running (in total and in the current
+namespace), how many namespaces there are, how much disk tm's home directory takes, and where it
+keeps its files and sockets. Below that, each session in the current namespace is listed with its
+background process id, how long it has been up, and how much disk its directory takes — mostly its
+history log, so this is where to look before reaching for `/clear-history`. The session you are
+inside is marked `current`; in the `*` namespace every session is listed, with its namespace.
+
+Any key returns to the menu.
+
 ### Show the help
 
 The command is `/help`. You just type words like `h`, `help`, `/h`, etc. and hit enter.

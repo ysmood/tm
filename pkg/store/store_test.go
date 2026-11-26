@@ -269,3 +269,25 @@ func readDirNames(g got.G, dir string) []string {
 func sliceHas(list []string, v string) bool {
 	return slices.Contains(list, v)
 }
+
+// DiskUsage counts everything under the home; SessionDiskUsage one session's own
+// directory — its metadata and both logs — and nothing of a session that is gone.
+func TestDiskUsage(t *testing.T) {
+	g, st := setup(t)
+	p := st.Paths()
+
+	g.E(st.SaveSession(sess("a", "a", store.DefaultNamespace, 1)))
+	g.E(st.SaveSession(sess("b", "b", store.DefaultNamespace, 2)))
+	g.E(st.CreateNamespace("work"))
+	g.E(os.WriteFile(p.LogFile("a"), make([]byte, 1000), 0o600))
+	g.E(os.WriteFile(p.DaemonLogFile("a"), make([]byte, 24), 0o600))
+
+	meta, err := os.Stat(p.SessionFile("a"))
+	g.E(err)
+
+	g.Eq(st.SessionDiskUsage("a"), meta.Size()+1000+24)
+	g.Eq(st.SessionDiskUsage("gone"), int64(0))
+	g.Eq(st.DiskUsage(), st.SessionDiskUsage("a")+st.SessionDiskUsage("b"))
+
+	g.Eq(store.New(config.Paths{Home: filepath.Join(t.TempDir(), "missing")}).DiskUsage(), int64(0))
+}

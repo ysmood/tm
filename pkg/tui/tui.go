@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"charm.land/bubbles/v2/textarea"
@@ -109,6 +110,7 @@ const (
 	cmdExit
 	cmdUseNamespace
 	cmdDropNamespace
+	cmdStatus
 	cmdHelp
 )
 
@@ -136,6 +138,7 @@ var palette = []paletteCmd{
 	{cmdExit, "/exit", "", ""},
 	{cmdUseNamespace, "/use-namespace", "ctrl+g", "Ctrl-G"},
 	{cmdDropNamespace, "/drop-namespace", "", ""},
+	{cmdStatus, "/status", "", ""},
 	{cmdHelp, "/help", "", ""},
 }
 
@@ -181,9 +184,10 @@ const currentHint = "current"
 type mode int
 
 const (
-	modePick  mode = iota // a type-to-filter menu (main, namespace)
-	modeInput             // a free-text prompt
-	modeHelp              // the detailed help screen (/help command)
+	modePick   mode = iota // a type-to-filter menu (main, namespace)
+	modeInput              // a free-text prompt
+	modeHelp               // the detailed help screen (/help command)
+	modeStatus             // the session overview (/status command)
 )
 
 // pickPurpose says what the active picker selects, so Enter dispatches correctly.
@@ -247,6 +251,9 @@ type Model struct {
 	// resumed session would overwrite them — the caller repositions them above
 	// the prompt instead (see promptGuard).
 	notices []string
+
+	// stats is what the /status screen shows, snapshotted when it opens.
+	stats stats
 
 	status string
 	quit   bool
@@ -554,8 +561,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePick(msg)
 		case modeInput:
 			return m.updateInput(msg)
-		case modeHelp:
-			// Any key dismisses the help screen back to the main menu.
+		case modeHelp, modeStatus:
+			// Any key dismisses the help or status screen back to the main menu.
 			m.showMenu()
 
 			return m, nil
@@ -813,6 +820,8 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 		m.showNamespaces(pickUseNamespace)
 	case cmdDropNamespace:
 		m.showNamespaces(pickDropNamespace)
+	case cmdStatus:
+		m.showStatus()
 	case cmdHelp:
 		m.mode = modeHelp
 	}
@@ -1035,6 +1044,8 @@ func (m Model) View() tea.View {
 		content = m.viewInput()
 	case modeHelp:
 		content = m.viewHelp()
+	case modeStatus:
+		content = m.viewStatus(time.Now())
 	}
 
 	return tea.View{Content: content, AltScreen: false}
@@ -1150,20 +1161,7 @@ func (m Model) viewHelp() string {
 
 	var b strings.Builder
 
-	key := th.cmd.Width(18)
-	section := func(title string, rows [][2]string) {
-		b.WriteString(th.session.Render(title))
-		b.WriteString("\n")
-
-		for _, r := range rows {
-			b.WriteString("  ")
-			b.WriteString(key.Render(r[0]))
-			b.WriteString(r[1])
-			b.WriteString("\n")
-		}
-
-		b.WriteString("\n")
-	}
+	section := func(title string, rows [][2]string) { writeSection(&b, title, rows) }
 
 	section("Keys", [][2]string{
 		{"↑/↓", "move the cursor (also Ctrl-P/N or Ctrl-K/J)"},
@@ -1193,6 +1191,7 @@ func (m Model) viewHelp() string {
 		{"/exit", "leave tm; every session keeps running"},
 		{"/use-namespace", "switch namespace, or type a new name to create one (* shows all)"},
 		{"/drop-namespace", "delete a namespace"},
+		{"/status", "show how many sessions run and how much disk they use"},
 		{"/help", "show this help"},
 	})
 

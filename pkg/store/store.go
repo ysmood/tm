@@ -6,6 +6,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -239,6 +240,36 @@ func (s *Store) ListNamespaces() ([]string, error) {
 	sort.Strings(out)
 
 	return out, nil
+}
+
+// DiskUsage reports how many bytes tm keeps under its home: every session's
+// metadata and logs, plus the namespace markers. It is best-effort — a file that
+// vanishes or can't be read mid-walk (a session ending, the temp file of a
+// concurrent atomic write) is skipped rather than failing the count — since it
+// only feeds a summary.
+func (s *Store) DiskUsage() int64 { return dirSize(s.paths.Home) }
+
+// SessionDiskUsage reports how many bytes one session's own directory holds: its
+// metadata, its history log and its daemon's log. A session whose directory is
+// gone holds nothing. Best-effort, like DiskUsage.
+func (s *Store) SessionDiskUsage(id string) int64 { return dirSize(s.paths.SessionDir(id)) }
+
+// dirSize sums the sizes of the regular files under root, skipping anything it
+// can't read.
+func dirSize(root string) int64 {
+	var n int64
+
+	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if info, ierr := d.Info(); ierr == nil {
+				n += info.Size()
+			}
+		}
+
+		return nil
+	})
+
+	return n
 }
 
 // Prune removes every session for which alive returns false.
