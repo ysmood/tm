@@ -166,6 +166,9 @@ The top-level menu, where there is no session to detach from, doesn't offer the 
 leaving tm from there is `/exit`'s job (also on `esc`, `Ctrl-D`, or `Ctrl-\`). Run `tm`
 again to pick a session back up.
 
+Leaving tm prints how many sessions it left running in the background, e.g.
+`[tm exited, 2 sessions still running]`, so the scrollback shows what is still around.
+
 ### Use namespace
 
 The command is `/use-namespace`. You just type words like `namespace`, `un`, `/u`, etc. and hit enter.

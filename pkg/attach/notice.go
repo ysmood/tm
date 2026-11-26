@@ -1,5 +1,7 @@
 package attach
 
+import "strconv"
+
 // Status notices are the one-line messages tm prints on the terminal when it
 // changes what the terminal is showing: switching to a session, a session's
 // shell exiting, detaching back to the menu, or leaving for the launching shell.
@@ -41,8 +43,19 @@ func SwitchedNotice(name string) []byte { return notice("[tm switched to session
 func exitedSessionNotice(name string) []byte { return notice("[tm exited session ", name, "]") }
 
 // ExitedNotice is shown when tm leaves for the launching shell (the /exit
-// command, or esc/Ctrl-C at the top level).
-func ExitedNotice() []byte { return notice("[tm exited]", "", "") }
+// command, or esc/Ctrl-C at the top level). It says how many sessions are left
+// running in the background — leaving tm stops none of them — with the count in
+// the accent color, the way the other notices pick out a session's name.
+func ExitedNotice(running int) []byte {
+	switch running {
+	case 0:
+		return notice("[tm exited, no sessions running]", "", "")
+	case 1:
+		return notice("[tm exited, ", "1", " session still running]")
+	default:
+		return notice("[tm exited, ", strconv.Itoa(running), " sessions still running]")
+	}
+}
 
 // DetachedSessionNotice is shown when tm detaches from session name and drops
 // back to the top-level menu (rather than leaving tm), with the session still

@@ -100,7 +100,7 @@ const (
 	exitedSess   = "[tm exited session"   // a session's shell exited
 	detachedMsg  = "[tm detached session" // /detach-session dropped to the top level
 	killedMsg    = "[tm killed session"   // /kill-session ended one
-	exitedMsg    = "[tm exited]"          // tm left for the launching shell
+	exitedMsg    = "[tm exited, "         // tm left for the launching shell
 )
 
 // tmBin builds the tm binary once per test run and returns its path. Every

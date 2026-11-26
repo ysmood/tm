@@ -2,7 +2,10 @@
 
 package app_test
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The ways a session or tm itself can end, each of which lands the user somewhere
 // specific: exiting the shell ends the session and returns to the top-level menu,
@@ -88,9 +91,14 @@ func TestExitCommandLeavesTM(t *testing.T) {
 	tm.waitExit()
 	tm.mustFrom(mark, exitedMsg)
 
-	// The session is still alive — /exit leaves tm, it does not end sessions.
+	// The session is still alive — /exit leaves tm, it does not end sessions —
+	// and the exit notice says so.
 	_, err := e.st.GetSession("aaa")
 	e.Desc("the session must still exist after /exit").E(err)
+
+	visible := tm.screen().visible()
+	e.Desc("the exit notice must count the session left running: %q", visible).
+		True(strings.Contains(visible, "[tm exited, 1 session still running]"))
 }
 
 // TestKillCurrentSessionFromMenu drives /kill-session aimed at the session the
@@ -115,10 +123,15 @@ func TestKillCurrentSessionFromMenu(t *testing.T) {
 	e.True(e.recordGone("aaa"))
 	e.True(pidGone(pid))
 
-	// The reopened menu is the top level: esc leaves tm.
+	// The reopened menu is the top level: esc leaves tm, noting that nothing is
+	// left running.
 	tm.write(keyEsc)
 	tm.must(exitedMsg)
 	tm.waitExit()
+
+	visible := tm.screen().visible()
+	e.Desc("the exit notice must count no sessions: %q", visible).
+		True(strings.Contains(visible, "[tm exited, no sessions running]"))
 }
 
 // TestKillCurrentSessionFromWithin drives the hairiest path: a tm run from INSIDE

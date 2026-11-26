@@ -270,6 +270,24 @@ func (c *controller) sessionLive(s store.Session) bool {
 	return processAlive(s.PID)
 }
 
+// liveSessions counts the sessions whose daemon is still running, across every
+// namespace: what is left running in the background once tm leaves. Liveness is
+// checked rather than assumed from the store, since a session can have died
+// since the menu last pruned (see sessionLive).
+func (c *controller) liveSessions() int {
+	sessions, _ := c.st.ListSessions()
+
+	n := 0
+
+	for _, s := range sessions {
+		if c.sessionLive(s) {
+			n++
+		}
+	}
+
+	return n
+}
+
 // Reap drops sessions whose daemon is no longer running and reports how many it
 // removed. The menu calls it after a failed attach: a session whose daemon was
 // killed (or whose socket vanished, e.g. after a reboot) lingers in the store
@@ -425,7 +443,7 @@ func runMenu(st *store.Store, ctrl *controller) error {
 		targetID, replay, leave, toMenu := pickTarget(res, curID, curAlt)
 
 		if toMenu || leave {
-			noteMenuExit(curName, toMenu)
+			noteMenuExit(ctrl, curName, toMenu)
 
 			if leave {
 				return nil
@@ -498,15 +516,16 @@ func afterRelay(
 // session's name in the scrollback above the reopened menu (whose fresh line
 // the notice's trailing newline also provides). Otherwise tm is left for the
 // launching shell (/exit / Ctrl-D, esc or top-level /detach-session), and the
-// departure is noted so it stays in the scrollback.
-func noteMenuExit(curName string, toMenu bool) {
+// departure is noted — with how many sessions are left running behind it — so
+// it stays in the scrollback.
+func noteMenuExit(ctrl *controller, curName string, toMenu bool) {
 	if toMenu {
 		_, _ = os.Stdout.Write(attach.DetachedSessionNotice(curName))
 
 		return
 	}
 
-	_, _ = os.Stdout.Write(attach.ExitedNotice())
+	_, _ = os.Stdout.Write(attach.ExitedNotice(ctrl.liveSessions()))
 }
 
 // killCurrentSession ends the session the menu was framed inside and returns
