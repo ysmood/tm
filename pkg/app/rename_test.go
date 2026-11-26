@@ -64,9 +64,12 @@ func TestRenameFromSessionKeepsCursor(t *testing.T) {
 	// after a rendered prompt.
 	tm.must(testPrompt)
 
-	// A known line above the prompt, so clobbering is detectable.
+	// A known line above the prompt, so clobbering is detectable. Wait for its
+	// output and the prompt after it, not just the marker: the shell's echo of the
+	// typed command carries the marker too, and the menu opened next detaches the
+	// relay, so a prompt the shell prints while the menu is up is never drawn.
 	tm.write("echo CURSOR-BASE-MARK" + keyEnter)
-	tm.must("CURSOR-BASE-MARK")
+	tm.must("CURSOR-BASE-MARK\r\n" + testPrompt)
 
 	// Rename twice — aaa -> aaa-zzz -> aaa-zzz-yyy — so BOTH notice rows must be
 	// relocated above the prompt; esc then resumes the session.
