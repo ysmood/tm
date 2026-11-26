@@ -139,6 +139,12 @@ var palette = []paletteCmd{
 	{cmdHelp, "[help]", "", ""},
 }
 
+// helpPin is the query that always puts [help] first on the main menu. The
+// fuzzy ranking alone favors [clear history] for "h": its "h" starts a word
+// after a space, while [help]'s follows "[", which the matcher doesn't treat
+// as a word boundary.
+const helpPin = "h"
+
 // cmdForKey maps a key press to the palette command it triggers directly, if
 // any. It backs the main-menu shortcuts (see updatePick), so a key like Ctrl-\
 // runs [detach session] without moving the cursor onto it first.
@@ -411,6 +417,9 @@ func (m *Model) menuItems() []pickerItem {
 			isCmd:   true,
 			hint:    c.hint,
 			payload: menuPayload{isCmd: true, cmdID: c.id},
+		}
+		if c.id == cmdHelp {
+			item.pin = helpPin
 		}
 		// [exit]'s keys, top level only (esc resumes the session when the menu is
 		// open over one). Ctrl-\ always leaves — with no session to detach from it

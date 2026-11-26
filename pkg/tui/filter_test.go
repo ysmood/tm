@@ -68,6 +68,21 @@ func TestFilterEmptyQueryKeepsOrder(t *testing.T) {
 	g.Eq(rankItems(items, ""), want)
 }
 
+// A pinned row jumps to the top only for its exact query; any other query
+// leaves the fuzzy ranking alone.
+func TestFilterPinOnlyOnExactQuery(t *testing.T) {
+	g := got.T(t)
+
+	plain := paletteItems()
+	items := paletteItems()
+	help := slices.IndexFunc(items, func(it pickerItem) bool { return it.payload.(menuPayload).cmdID == cmdHelp })
+	items[help].pin = helpPin
+
+	g.Neq(rankItems(plain, helpPin)[0], help) // fuzzy alone favors [clear history]
+	g.Eq(rankItems(items, helpPin)[0], help)
+	g.Eq(rankItems(items, "e"), rankItems(plain, "e")) // matches [help], but isn't its pin
+}
+
 // Sessions are found by the same fuzzy name match as everything else.
 func TestFilterMatchesSessions(t *testing.T) {
 	g := got.T(t)

@@ -24,7 +24,10 @@ type pickerItem struct {
 	// hintFn, when set, recomputes hint from the current filter query on every
 	// refilter, so a row's shortcut hint can react to what is typed (see the
 	// [exit] row in menuItems).
-	hintFn  func(query string) string
+	hintFn func(query string) string
+	// pin, when set, is a query that puts this row first when typed exactly,
+	// whatever the fuzzy ranking says (see rankItems and helpPin).
+	pin     string
 	payload any
 }
 

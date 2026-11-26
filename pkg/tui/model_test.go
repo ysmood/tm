@@ -884,6 +884,17 @@ func TestModelHelpScreen(t *testing.T) {
 	g.Eq(m.pickFor, pickMenu)
 }
 
+// Typing just "h" opens [help], even with a session whose name starts with "h"
+// that the fuzzy ranking alone would put first — ahead of [clear history] too.
+func TestModelHOpensHelp(t *testing.T) {
+	g := got.T(t)
+	st := newStore(g, t)
+	g.E(st.SaveSession(store.Session{ID: "s1", Name: "hello", Namespace: store.DefaultNamespace}))
+
+	m := send(typeStr(New(st, fakeCtrl{}), helpPin), keyEnterMsg)
+	g.Eq(m.mode, modeHelp)
+}
+
 // [use namespace] also creates: typing a name no namespace has yet surfaces a
 // create row that makes it and switches to it.
 func TestModelCreateNamespace(t *testing.T) {

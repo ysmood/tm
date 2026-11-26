@@ -192,7 +192,8 @@ Pick the namespace to remove. Its sessions are not touched — they keep running
 
 ### Show the help
 
-The command is `[help]`. You just type words like `help`, `[h`, etc. and hit enter.
+The command is `[help]`. You just type words like `h`, `help`, etc. and hit enter — a lone `h`
+always puts `[help]` on top, even over sessions whose names start with `h`.
 
 It lists every key and every command with a one-line description — the same reference as this
 section of the README, without leaving the menu. Any key returns to the menu.

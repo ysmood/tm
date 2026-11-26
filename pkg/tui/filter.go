@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"slices"
+
 	"github.com/sahilm/fuzzy"
 )
 
@@ -27,6 +29,16 @@ func rankItems(items []pickerItem, query string) []int {
 	out := make([]int, 0, len(items))
 	for _, m := range fuzzy.Find(query, texts) {
 		out = append(out, m.Index)
+	}
+
+	// A row pinned to exactly this query jumps to the top, keeping the rest in
+	// their ranked order.
+	for i, idx := range out {
+		if items[idx].pin != "" && items[idx].pin == query {
+			out = slices.Insert(slices.Delete(out, i, i+1), 0, idx)
+
+			break
+		}
 	}
 
 	return out
