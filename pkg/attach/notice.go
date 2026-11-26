@@ -40,7 +40,7 @@ func SwitchedNotice(name string) []byte { return notice("[tm switched to session
 // relay's own teardown is the only thing that reports it (see rawTerminal).
 func exitedSessionNotice(name string) []byte { return notice("[tm exited session ", name, "]") }
 
-// ExitedNotice is shown when tm leaves for the launching shell (the [exit]
+// ExitedNotice is shown when tm leaves for the launching shell (the /exit
 // command, or esc/Ctrl-C at the top level).
 func ExitedNotice() []byte { return notice("[tm exited]", "", "") }
 
@@ -49,7 +49,7 @@ func ExitedNotice() []byte { return notice("[tm exited]", "", "") }
 // running in the background.
 func DetachedSessionNotice(name string) []byte { return notice("[tm detached session ", name, "]") }
 
-// RenamedSessionNotice is shown after [rename session] renames old to name. It
+// RenamedSessionNotice is shown after /rename-session renames old to name. It
 // names both sides of the change, since neither alone identifies what happened.
 // Unlike the others it is a string, not bytes: the menu is still on screen when a
 // rename lands, so it is printed through Bubble Tea (which appends the line break
@@ -58,14 +58,14 @@ func RenamedSessionNotice(old, name string) string {
 	return noticeLine("[tm renamed session ", old+" → "+name, "]")
 }
 
-// KilledSessionNotice is shown after [kill session] ends session name. Like
+// KilledSessionNotice is shown after /kill-session ends session name. Like
 // RenamedSessionNotice it is a string: the menu is still on screen when the kill
 // lands, so it is printed through Bubble Tea rather than written to the terminal.
 func KilledSessionNotice(name string) string {
 	return noticeLine("[tm killed session ", name, "]")
 }
 
-// ClearedHistoryNotice is shown after [clear history] wipes session name's
+// ClearedHistoryNotice is shown after /clear-history wipes session name's
 // recorded scrollback (its log file). Like
 // RenamedSessionNotice it is a string: the menu is still on screen when the
 // clear lands, so it is printed through Bubble Tea rather than written to the
@@ -74,7 +74,7 @@ func ClearedHistoryNotice(name string) string {
 	return noticeLine("[tm cleared history of session ", name, "]")
 }
 
-// KilledCurrentSessionNotice is KilledSessionNotice for when [kill session] ends
+// KilledCurrentSessionNotice is KilledSessionNotice for when /kill-session ends
 // the session the menu was opened over: the menu has already quit (the relay is
 // torn down around the kill), so the notice is written straight to the terminal
 // like the attach/detach notices, before the top-level menu redraws.

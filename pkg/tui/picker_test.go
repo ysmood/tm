@@ -27,17 +27,17 @@ func TestPickerTypeToFilter(t *testing.T) {
 	m := sized(g, t)
 
 	v := m.View().Content
-	g.Has(v, "[new session]")
+	g.Has(v, "/new-session")
 	g.Has(v, sessWeb)
 	// Sessions are listed ahead of the commands.
-	g.True(strings.Index(v, sessWeb) < strings.Index(v, "[new session]"))
+	g.True(strings.Index(v, sessWeb) < strings.Index(v, "/new-session"))
 
 	// Typing filters live: the matching session stays, unrelated commands drop.
 	typed := typeStr(m, "web")
 	g.Eq(typed.pick.input.Value(), "web") // query captured by the textarea
 	filtered := typed.View().Content
 	g.Has(filtered, sessWeb)
-	g.True(!strings.Contains(filtered, "[use namespace]"))
+	g.True(!strings.Contains(filtered, "/use-namespace"))
 
 	// A query that matches nothing shows the empty state.
 	g.Has(typeStr(m, "zzzz").View().Content, "No matches")
@@ -49,7 +49,7 @@ func TestPickerKillChooserFilters(t *testing.T) {
 	m := sized(g, t)
 
 	m = typeStr(m, "kill")
-	m = send(m, keyEnterMsg) // [kill session] -> the session chooser
+	m = send(m, keyEnterMsg) // /kill-session -> the session chooser
 	g.Eq(m.pickFor, pickKillSession)
 	g.Has(m.View().Content, sessAPI)
 

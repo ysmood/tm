@@ -6,8 +6,8 @@ import "testing"
 
 // The ways a session or tm itself can end, each of which lands the user somewhere
 // specific: exiting the shell ends the session and returns to the top-level menu,
-// [detach session] returns there with the session still running, [exit] leaves tm
-// entirely, and [kill session] aimed at the current session ends what is on the
+// /detach-session returns there with the session still running, /exit leaves tm
+// entirely, and /kill-session aimed at the current session ends what is on the
 // terminal and drops back to the menu.
 
 // TestSessionExitReturnsToMenu proves that exiting the session's shell ends the
@@ -37,7 +37,7 @@ func TestSessionExitReturnsToMenu(t *testing.T) {
 	tm.waitExit()
 }
 
-// TestDetachFromSessionReturnsToMenu proves the headline of [detach session]:
+// TestDetachFromSessionReturnsToMenu proves the headline of /detach-session:
 // detaching from inside a session no longer leaves tm — it drops back to the
 // top-level menu with the session still running, so the user can pick it (or
 // another) straight away. It detaches, checks tm stayed up with the session still
@@ -69,8 +69,8 @@ func TestDetachFromSessionReturnsToMenu(t *testing.T) {
 	tm.waitExit()
 }
 
-// TestExitCommandLeavesTM proves [exit] leaves tm from inside a session — unlike
-// [detach session], which returns to the menu, and unlike esc, which resumes. tm
+// TestExitCommandLeavesTM proves /exit leaves tm from inside a session — unlike
+// /detach-session, which returns to the menu, and unlike esc, which resumes. tm
 // exits to the launching shell while the session keeps running.
 func TestExitCommandLeavesTM(t *testing.T) {
 	e := setupTM(t)
@@ -83,17 +83,17 @@ func TestExitCommandLeavesTM(t *testing.T) {
 	tm.menu()
 
 	mark := tm.mark()
-	tm.write("exit" + keyEnter) // fuzzy-filter to [exit] and run it
+	tm.write("exit" + keyEnter) // fuzzy-filter to /exit and run it
 
 	tm.waitExit()
 	tm.mustFrom(mark, exitedMsg)
 
-	// The session is still alive — [exit] leaves tm, it does not end sessions.
+	// The session is still alive — /exit leaves tm, it does not end sessions.
 	_, err := e.st.GetSession("aaa")
-	e.Desc("the session must still exist after [exit]").E(err)
+	e.Desc("the session must still exist after /exit").E(err)
 }
 
-// TestKillCurrentSessionFromMenu drives [kill session] aimed at the session the
+// TestKillCurrentSessionFromMenu drives /kill-session aimed at the session the
 // menu was opened over (Ctrl-\): it ends it — shell and daemon — and drops back to
 // the top-level menu with a kill notice, instead of resuming a dead session or
 // leaving the terminal in a broken state.

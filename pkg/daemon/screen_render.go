@@ -85,7 +85,7 @@ func openLink(dst []byte, link string) []byte {
 }
 
 // snapshot renders the main screen as history text — what would be recorded if
-// it all scrolled off now — down to its last row with text. [history] shows it
+// it all scrolled off now — down to its last row with text. /history shows it
 // after the log, so the pager ends on what the session's screen shows.
 func (s *screen) snapshot() []byte {
 	var b []byte

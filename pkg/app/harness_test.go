@@ -89,17 +89,17 @@ const (
 // menu rows tm prints, so a wait for one is a wait for tm to have actually reached
 // that state.
 const (
-	menuRow      = "[new session]"        // the top-level menu is up
-	renameRow    = "[rename session]"     // ...with its full command list rendered
+	menuRow      = "/new-session"         // the top-level menu is up
+	renameRow    = "/rename-session"      // ...with its full command list rendered
 	sessionHint  = "session:"             // the menu is framed inside a session
 	currentHint  = "current"              // a chooser row for the session tm is inside
-	namePrompt   = "New session name"     // the [new session] name prompt
-	renamePrompt = "Rename session:"      // the [rename session] name prompt
+	namePrompt   = "New session name"     // the /new-session name prompt
+	renamePrompt = "Rename session:"      // the /rename-session name prompt
 	enteredMsg   = "[tm entered session"  // a relay attached from the top-level menu
 	switchedMsg  = "[tm switched to sess" // the relay moved to another session
 	exitedSess   = "[tm exited session"   // a session's shell exited
-	detachedMsg  = "[tm detached session" // [detach session] dropped to the top level
-	killedMsg    = "[tm killed session"   // [kill session] ended one
+	detachedMsg  = "[tm detached session" // /detach-session dropped to the top level
+	killedMsg    = "[tm killed session"   // /kill-session ended one
 	exitedMsg    = "[tm exited]"          // tm left for the launching shell
 )
 
@@ -432,7 +432,7 @@ func (tm *term) innerTM() int {
 }
 
 // detach leaves tm the way a user does from inside a session: Ctrl-\ opens the
-// menu, [detach session] drops back to the top-level menu with the session still
+// menu, /detach-session drops back to the top-level menu with the session still
 // running, and esc there leaves tm for the launching shell.
 func (tm *term) detach() {
 	tm.Helper()
@@ -440,14 +440,14 @@ func (tm *term) detach() {
 	tm.detachFromMenu()
 }
 
-// detachToMenu runs [detach session] from a menu already open over a session,
+// detachToMenu runs /detach-session from a menu already open over a session,
 // dropping back to the top-level menu with the session still running. It returns
 // the mark it waited from, so a caller can assert on what the detach printed.
 func (tm *term) detachToMenu() int {
 	tm.Helper()
 
 	mark := tm.mark()
-	tm.write("detach" + keyEnter) // fuzzy-filter to [detach session] and run it
+	tm.write("detach" + keyEnter) // fuzzy-filter to /detach-session and run it
 	tm.mustFrom(mark, menuRow)
 	time.Sleep(settle)
 
@@ -462,7 +462,7 @@ func (tm *term) detachFromMenu() {
 	tm.write(keyEsc)
 }
 
-// rename runs [rename session] from the open menu, picks the row for the session
+// rename runs /rename-session from the open menu, picks the row for the session
 // called name, appends suffix to the prefilled name, and waits for the notice
 // quoting both sides of the change. The wait stops short of the notice's closing
 // "]": a color-reset escape sits between the new name and the bracket in the raw
@@ -471,7 +471,7 @@ func (tm *term) rename(name, suffix string) {
 	tm.Helper()
 
 	chooser := tm.mark()
-	tm.write("rs" + keyEnter)  // fuzzy-filter to [rename session] and select it
+	tm.write("rs" + keyEnter)  // fuzzy-filter to /rename-session and select it
 	tm.mustFrom(chooser, name) // the chooser redraws the session's row
 
 	prompt := tm.mark()
@@ -482,7 +482,7 @@ func (tm *term) rename(name, suffix string) {
 	tm.mustFrom(prompt, name+" → "+name+suffix)
 }
 
-// killCurrent runs [kill session] from a menu open over the current session and
+// killCurrent runs /kill-session from a menu open over the current session and
 // picks the row it offers for that session — marked "current", since ending it also
 // ends what is on this terminal. It returns the mark taken just before the kill, so
 // the notices that follow can be required to be freshly drawn.
@@ -490,7 +490,7 @@ func (tm *term) killCurrent() int {
 	tm.Helper()
 
 	chooser := tm.mark()
-	tm.write("ks" + keyEnter) // fuzzy-filter to [kill session] and select it
+	tm.write("ks" + keyEnter) // fuzzy-filter to /kill-session and select it
 	tm.mustFrom(chooser, currentHint)
 
 	mark := tm.mark()
@@ -544,12 +544,12 @@ func (tm *term) enter(name string) {
 	tm.mustFrom(mark, enteredMsg)
 }
 
-// newSession runs [new session], accepts the default name, and waits for the
+// newSession runs /new-session, accepts the default name, and waits for the
 // relay to report the created session attached.
 func (tm *term) newSession() {
 	tm.Helper()
 	tm.must(menuRow)
-	tm.send("ns" + keyEnter) // fuzzy-filter to [new session] and select it
+	tm.send("ns" + keyEnter) // fuzzy-filter to /new-session and select it
 	tm.must(namePrompt)
 
 	mark := tm.mark()

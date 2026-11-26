@@ -157,7 +157,7 @@ func TestReattachReplaysHistoryPastClear(t *testing.T) {
 	second.waitExit()
 }
 
-// TestHistoryShowsScreen drives the real binary: [history] pages the session's
+// TestHistoryShowsScreen drives the real binary: /history pages the session's
 // log followed by what its screen shows now, so output that hasn't scrolled off
 // the screen yet — not in the log — is still in the history.
 func TestHistoryShowsScreen(t *testing.T) {
@@ -183,7 +183,7 @@ func TestHistoryShowsScreen(t *testing.T) {
 	tm.must(renameRow) // the menu is up with its command list
 
 	chooser := tm.mark()
-	tm.write("[hi" + keyEnter) // fuzzy-filter to [history] (not [clear history]) and select it
+	tm.write("/hi" + keyEnter) // fuzzy-filter to /history (not /clear-history) and select it
 	tm.mustFrom(chooser, "hst")
 
 	pager := tm.mark()

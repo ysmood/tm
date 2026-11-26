@@ -234,7 +234,7 @@ func (d *Daemon) handleConn(nc net.Conn) {
 	}
 
 	// A MsgScreen connection asks for what the session's main screen shows, as
-	// history text, so [history] can page it after the log (which holds only what
+	// history text, so /history can page it after the log (which holds only what
 	// has scrolled off). The deferred close of this connection ends the reply.
 	if mt == proto.MsgScreen {
 		d.mu.Lock()

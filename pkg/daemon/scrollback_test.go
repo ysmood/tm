@@ -29,7 +29,7 @@ func record(sb *scrollback, hist string) {
 }
 
 // Only what scrolls off the screen reaches the log; the screen holds the rest,
-// which Snapshot renders for [history].
+// which Snapshot renders for /history.
 func TestWriteRecordsScrolledLines(t *testing.T) {
 	g := got.T(t)
 	sb := newSB(t, g, 2)
@@ -77,7 +77,7 @@ func TestHistoryReadsBoundedTail(t *testing.T) {
 	g.Lte(len(hist), tailBytes)
 }
 
-// Clear wipes the log and blanks the screen, so neither [history] nor a replay
+// Clear wipes the log and blanks the screen, so neither /history nor a replay
 // can show what came before — but not the terminal state a still-running
 // full-screen app is in. Output after it is recorded from a clean slate (the
 // O_APPEND handle writes at the truncated file's end).
@@ -103,7 +103,7 @@ func TestClear(t *testing.T) {
 	g.True(sb.Alt()) // the wipe cleared history, not the terminal's state
 }
 
-// readLog returns the log file's whole content, as a [history] pager sees it.
+// readLog returns the log file's whole content, as a /history pager sees it.
 func readLog(g got.G, sb *scrollback) string {
 	b, err := os.ReadFile(sb.path)
 	g.E(err)

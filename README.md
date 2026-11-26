@@ -23,7 +23,7 @@ tm will use vscode like [fuzzy search](https://github.com/sahilm/fuzzy) to help 
 
 ### Create a new session
 
-The command is `[new session]`. You just type words like, `new` `ns`, `[n`, `[ns`, etc. and hit enter.
+The command is `/new-session`. You just type words like, `new` `ns`, `/n`, `/ns`, etc. and hit enter.
 `Ctrl-T` runs it straight from the menu, without filtering to it first.
 
 This command will create a new shell session. It will auto generate a default name for the session, you can change it before entering the session.
@@ -59,7 +59,7 @@ must resolve it to the same path, so set it in a shared profile rather than per 
 
 ### Rename a session
 
-The command is `[rename session]`. You just type words like `rename`, `rs`, `[r`, etc. and hit enter.
+The command is `/rename-session`. You just type words like `rename`, `rs`, `/r`, etc. and hit enter.
 
 Pick the session you want to rename — including the one you are currently inside — then edit its
 name and hit enter. The session keeps running throughout; only its label changes. Names must be
@@ -70,7 +70,7 @@ switching and detaching, so the change stays in your scrollback.
 
 ### Kill a session
 
-The command is `[kill session]`. You just type words like `kill`, `ks`, `[k`, etc. and hit enter.
+The command is `/kill-session`. You just type words like `kill`, `ks`, `/k`, etc. and hit enter.
 
 Pick the session to kill: its shell is terminated and the session — scrollback and all — is removed
 from the list. A session whose background process has already died is simply cleared from the list.
@@ -84,7 +84,7 @@ tm then prints `[tm killed session <name>]` above the menu, so the change stays 
 
 ### Clear a session's history
 
-The command is `[clear history]`. You just type words like `clear`, `ch`, `[c`, etc. and hit enter.
+The command is `/clear-history`. You just type words like `clear`, `ch`, `/c`, etc. and hit enter.
 
 Pick the session whose history to wipe — including the one you are currently inside, marked
 `current`. The session's log file is truncated and the copy of its screen tm keeps is blanked, so
@@ -104,7 +104,7 @@ your scrollback.
 
 ### View a session's history
 
-The command is `[history]`. You just type words like `history`, `[hi`, etc. and hit enter.
+The command is `/history`. You just type words like `history`, `/hi`, etc. and hit enter.
 
 Pick the session whose recorded output you want to read — including the one you are currently
 inside, marked `current`. tm opens it in `less -R`, the same way `git show` opens its output in a
@@ -153,27 +153,27 @@ Exiting the session's shell itself (typing `exit` or pressing `Ctrl-D`) ends the
 session for good — its background process stops and it disappears from the list.
 Instead of dropping you out of tm, this returns you to the menu, where you can
 pick another session or start a new one. (To keep the session alive, use
-`[detach session]` below; to leave tm entirely, `[exit]`.)
+`/detach-session` below; to leave tm entirely, `/exit`.)
 
 ### Detach from a session
 
-While you are inside a session, choose the `[detach session]` command from the menu
-(`Ctrl-\` opens it). You just type words like `detach`, `ds`, `[d`, `[ds`, etc. and hit enter.
+While you are inside a session, choose the `/detach-session` command from the menu
+(`Ctrl-\` opens it). You just type words like `detach`, `ds`, `/d`, `/ds`, etc. and hit enter.
 It drops you back to the top-level menu with the session — and every other one — still
 running in the background.
 
 The top-level menu, where there is no session to detach from, doesn't offer the command;
-leaving tm from there is `[exit]`'s job (also on `esc`, `Ctrl-D`, or `Ctrl-\`). Run `tm`
+leaving tm from there is `/exit`'s job (also on `esc`, `Ctrl-D`, or `Ctrl-\`). Run `tm`
 again to pick a session back up.
 
 ### Use namespace
 
-The command is `[use namespace]`. You just type words like `namespace`, `un`, `[n`, etc. and hit enter.
+The command is `/use-namespace`. You just type words like `namespace`, `un`, `/u`, etc. and hit enter.
 `Ctrl-G` runs it straight from the menu.
 
 A namespace is a way to group sessions together. When you enter tm, it uses a namespace called `default`,
 and you only see sessions under your current namespace. Pick a namespace from the list to switch to it,
-or type a name that doesn't exist yet and choose `[new namespace] <name>` to create it and switch to it
+or type a name that doesn't exist yet and choose `/new-namespace <name>` to create it and switch to it
 in one step.
 
 If you want to see all sessions, you can switch to the `*` namespace.
@@ -184,7 +184,7 @@ Set the `TM_NAMESPACE` environment variable to choose the namespace tm opens in
 
 ### Drop namespace
 
-The command is `[drop namespace]`. You just type words like `drop`, `dn`, `[d`, etc. and hit enter.
+The command is `/drop-namespace`. You just type words like `drop`, `dn`, `/dn`, etc. and hit enter.
 
 Pick the namespace to remove. Its sessions are not touched — they keep running and move to the
 `default` namespace, so nothing is lost by dropping the group they were grouped under. The
@@ -192,8 +192,7 @@ Pick the namespace to remove. Its sessions are not touched — they keep running
 
 ### Show the help
 
-The command is `[help]`. You just type words like `h`, `help`, etc. and hit enter — a lone `h`
-always puts `[help]` on top, even over sessions whose names start with `h`.
+The command is `/help`. You just type words like `h`, `help`, `/h`, etc. and hit enter.
 
 It lists every key and every command with a one-line description — the same reference as this
 section of the README, without leaving the menu. Any key returns to the menu.

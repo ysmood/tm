@@ -32,7 +32,7 @@ const trimBufSize = 64 << 10 // 64 KiB
 // PTY output is fed to (see screen), and the append-only log file the lines
 // scrolling off that screen are recorded to — the only place the session's
 // history lives. The log holds clean text and color — what a pager shows for
-// [history] — rather than the raw control stream a terminal would act on; what
+// /history — rather than the raw control stream a terminal would act on; what
 // is still on screen is the screen's, until it scrolls off.
 type scrollback struct {
 	mu    sync.Mutex
@@ -105,7 +105,7 @@ func (s *scrollback) record(hist []byte) {
 // through a second, non-append handle, then the file is truncated to it, and the
 // O_APPEND handle carries on writing at the new end. Replacing the file by
 // renaming a fresh copy over it would be atomic, but Windows refuses to rename
-// over a file that is open — and the daemon (and maybe a [history] pager) always
+// over a file that is open — and the daemon (and maybe a /history pager) always
 // has this one open. The copy only ever writes over bytes it has already read
 // (the destination trails the source), so a forward copy is safe.
 //

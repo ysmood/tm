@@ -129,7 +129,7 @@ func TestDetachRestoresTerminal(t *testing.T) {
 	tm.run("MARK")
 
 	// Ctrl-\ opens the menu (resetting the terminal as it tears the relay down);
-	// [detach session] then leaves tm. The reset asserted on below is emitted by
+	// /detach-session then leaves tm. The reset asserted on below is emitted by
 	// that teardown, exactly as a direct detach used to emit it.
 	tm.detach()
 	tm.waitExit()

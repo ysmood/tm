@@ -11,7 +11,7 @@ import (
 )
 
 // pickerItem is one selectable row. text overrides the fuzzy-match target (it
-// defaults to label). isCmd marks a bracketed command action (rather than a
+// defaults to label). isCmd marks a /command action (rather than a
 // session or namespace name) so the delegate colors it apart. hint is an
 // optional shortcut label (e.g. "Ctrl-T") the delegate renders dimmed at the
 // row's right edge. payload carries whatever the caller needs when the row is
@@ -23,11 +23,8 @@ type pickerItem struct {
 	hint  string
 	// hintFn, when set, recomputes hint from the current filter query on every
 	// refilter, so a row's shortcut hint can react to what is typed (see the
-	// [exit] row in menuItems).
-	hintFn func(query string) string
-	// pin, when set, is a query that puts this row first when typed exactly,
-	// whatever the fuzzy ranking says (see rankItems and helpPin).
-	pin     string
+	// /exit row in menuItems).
+	hintFn  func(query string) string
 	payload any
 }
 
@@ -51,9 +48,9 @@ func (a listAdapter) FilterValue() string { return a.matchText() }
 const cursorGlyph = "●"
 
 // pickerDelegate renders one row: the cursor glyph plus the label when selected,
-// an indented label otherwise — bracketed command rows in the command color and
+// an indented label otherwise — /command rows in the command color and
 // names (sessions, namespaces) in the plain name color, so the two read apart by
-// color as well as by their brackets.
+// color as well as by the leading "/".
 type pickerDelegate struct{}
 
 func (pickerDelegate) Height() int                         { return 1 }
@@ -123,7 +120,7 @@ type picker struct {
 	width int
 	// extra, when set, contributes query-dependent rows appended after the ranked
 	// matches and recomputed on every keystroke, so they track the typed text. It
-	// backs the [use namespace] picker's "create <query>" row.
+	// backs the /use-namespace picker's "create <query>" row.
 	extra func(query string) []pickerItem
 }
 

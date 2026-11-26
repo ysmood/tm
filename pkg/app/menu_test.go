@@ -48,7 +48,7 @@ func TestNewSessionShowsInitialPrompt(t *testing.T) {
 
 	tm := e.start()
 	tm.must(menuRow)
-	tm.send("ns" + keyEnter) // fuzzy-filter to [new session] and select it
+	tm.send("ns" + keyEnter) // fuzzy-filter to /new-session and select it
 	tm.must(namePrompt)
 
 	mark := tm.mark()

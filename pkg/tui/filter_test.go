@@ -17,8 +17,9 @@ func paletteItems() []pickerItem {
 	return items
 }
 
-// Commands are found by fuzzy-matching their bracketed labels: typing a
-// command's letters in order surfaces it first.
+// Commands are found by fuzzy-matching their /labels: typing a command's
+// letters in order surfaces it first. The queries are the ones the README
+// documents for each command, with and without the leading "/".
 func TestPaletteFuzzyRanksCorrectly(t *testing.T) {
 	g := got.T(t)
 	items := paletteItems()
@@ -31,16 +32,25 @@ func TestPaletteFuzzyRanksCorrectly(t *testing.T) {
 		g.Desc("query %q ranked the wrong command first", query).Eq(items[order[0]].payload.(menuPayload).cmdID, want)
 	}
 
-	check("ds", cmdDetachSession)
-	check("un", cmdUseNamespace)
-	check("dn", cmdDropNamespace)
-	check("detach", cmdDetachSession)
-	check("drop", cmdDropNamespace)
+	for want, queries := range map[cmdID][]string{
+		cmdNewSession:    {"new", "n", "ns", "/n", "/ns"},
+		cmdRenameSession: {"rename", "rs", "/r"},
+		cmdKillSession:   {"kill", "ks", "/k"},
+		cmdClearHistory:  {"clear", "ch", "/c"},
+		cmdHistory:       {"history", "hi", "/hi"},
+		cmdDetachSession: {"detach", "ds", "/d", "/ds"},
+		cmdUseNamespace:  {"namespace", "un", "/u"},
+		cmdDropNamespace: {"drop", "dn", "/dn"},
+		cmdHelp:          {"help", "h", "/h"},
+	} {
+		for _, q := range queries {
+			check(q, want)
+		}
+	}
 }
 
 // Random in-order characters filter the palette like any other fuzzy field, with
-// no per-command aliases: "session" matches both [new session] and [detach
-// session].
+// no per-command aliases: "session" matches both /new-session and /detach-session.
 func TestPaletteFuzzyMatchesMultiple(t *testing.T) {
 	g := got.T(t)
 	items := paletteItems()
@@ -66,21 +76,6 @@ func TestFilterEmptyQueryKeepsOrder(t *testing.T) {
 	}
 
 	g.Eq(rankItems(items, ""), want)
-}
-
-// A pinned row jumps to the top only for its exact query; any other query
-// leaves the fuzzy ranking alone.
-func TestFilterPinOnlyOnExactQuery(t *testing.T) {
-	g := got.T(t)
-
-	plain := paletteItems()
-	items := paletteItems()
-	help := slices.IndexFunc(items, func(it pickerItem) bool { return it.payload.(menuPayload).cmdID == cmdHelp })
-	items[help].pin = helpPin
-
-	g.Neq(rankItems(plain, helpPin)[0], help) // fuzzy alone favors [clear history]
-	g.Eq(rankItems(items, helpPin)[0], help)
-	g.Eq(rankItems(items, "e"), rankItems(plain, "e")) // matches [help], but isn't its pin
 }
 
 // Sessions are found by the same fuzzy name match as everything else.

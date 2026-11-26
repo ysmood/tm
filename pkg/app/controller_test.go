@@ -2,7 +2,7 @@
 
 package app
 
-// The controller's two daemon requests — [kill session] and [clear history] — in
+// The controller's two daemon requests — /kill-session and /clear-history — in
 // each of the four states a session can be in when one arrives: a live daemon that
 // answers, a session whose process is gone, a session that is alive but whose
 // socket has vanished, and a daemon that accepts the request and then goes silent.
@@ -29,7 +29,7 @@ import (
 const deadPID = 1 << 30
 
 // secretMark is content a test plants in a session's log so a clear can be shown
-// to have removed it — the reason [clear history] exists.
+// to have removed it — the reason /clear-history exists.
 const secretMark = "SECRET-MARK"
 
 // ctl is a controller over an isolated store, with the paths behind it.
@@ -160,7 +160,7 @@ func TestControllerKillSessionLive(t *testing.T) {
 }
 
 // KillSession on a session whose daemon is unreachable (no socket to dial) and
-// whose process is gone removes it from the store directly, so [kill session] also
+// whose process is gone removes it from the store directly, so /kill-session also
 // clears dead entries instead of erroring on them.
 func TestControllerKillSessionDead(t *testing.T) {
 	c := setupCtl(t)
@@ -277,7 +277,7 @@ func (c *ctl) staleLock(id string) {
 
 // A dead session whose recorded PID now belongs to an unrelated live process —
 // after a reboot, or once PIDs wrap — is still known dead by its free lock, so
-// [kill session] removes it instead of refusing it as "alive but unreachable".
+// /kill-session removes it instead of refusing it as "alive but unreachable".
 // This process's own PID stands in for the reused one.
 func TestControllerKillSessionReusedPID(t *testing.T) {
 	c := setupCtl(t)

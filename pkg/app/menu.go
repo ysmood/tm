@@ -314,7 +314,7 @@ func Run() error {
 // arrival. esc/Ctrl-C (ActionNone) leaves tm at the top level but resumes the
 // current session when reopened from one, replaying nothing: that session's screen
 // never went away, so redrawing it would print a second copy over it.
-// [detach session] from within a session returns to the top-level menu (toMenu)
+// /detach-session from within a session returns to the top-level menu (toMenu)
 // with every session still running, first resetting the terminal so the menu
 // redraws clean; at the top level, where there is no session to detach from, it
 // leaves tm like esc.
@@ -344,7 +344,7 @@ func pickTarget(
 
 		return "", false, true, false
 	case tui.ActionExit:
-		// [exit] (Ctrl-D): leave tm from anywhere. When leaving from within a
+		// /exit (Ctrl-D): leave tm from anywhere. When leaving from within a
 		// session, reset the terminal for the launching shell first — the alt-screen
 		// exit only when the session was on it (curAlt), so exiting at a plain shell
 		// prompt keeps the scrollback intact.
@@ -362,7 +362,7 @@ func pickTarget(
 // between the interactive menu and the relay. Picking a session attaches the
 // relay; pressing the menu key (Ctrl-\) inside the session returns here and
 // reopens the menu — framed as in-session — so esc resumes that session, picking
-// another switches to it, and [detach session] drops back to the top-level menu
+// another switches to it, and /detach-session drops back to the top-level menu
 // with the session still running (esc there leaves tm). Exiting the session's
 // shell likewise ends the session and drops back to the top-level menu, so the
 // user can pick or start another session. A failed attach reaps the unreachable
@@ -397,13 +397,13 @@ func runMenu(st *store.Store, ctrl *controller) error {
 
 		status = ""
 
-		// [rename session] may have renamed the session this menu was framed as
+		// /rename-session may have renamed the session this menu was framed as
 		// running inside, so re-read its name before the notices below quote it.
 		if curID != "" {
 			curName = sessionName(st, curID)
 		}
 
-		// [kill session] aimed at the session this menu sits over: handled before
+		// /kill-session aimed at the session this menu sits over: handled before
 		// pickTarget since it is neither an attach nor a plain way out — the session
 		// (and whatever of it is on this screen) is being ended deliberately.
 		if res.Action == tui.ActionKillCurrent {
@@ -413,7 +413,7 @@ func runMenu(st *store.Store, ctrl *controller) error {
 			continue
 		}
 
-		// [history] pages a session's log in less, then reopens the menu with the
+		// /history pages a session's log in less, then reopens the menu with the
 		// same framing (curID/curName/curAlt unchanged — the session this menu sits
 		// over is untouched).
 		if res.Action == tui.ActionHistory {
@@ -471,7 +471,7 @@ type menuState struct {
 // forever — and note it on the reopened top-level menu. OutcomeMenu (Ctrl-\)
 // reopens the menu framed as in-session, so esc resumes and a pick switches,
 // remembering whether the session left the terminal on the alt screen so a
-// following [detach session] resets it correctly. OutcomeSessionExited falls
+// following /detach-session resets it correctly. OutcomeSessionExited falls
 // back to the top-level menu — the session is gone and its relay already reset
 // the terminal — so the user can pick or start another session instead of
 // leaving tm.
@@ -492,12 +492,12 @@ func afterRelay(
 }
 
 // noteMenuExit writes the scrollback notice for the plain ways out of the menu
-// loop. Detaching from a session ([detach session] inside one) drops to the
+// loop. Detaching from a session (/detach-session inside one) drops to the
 // top-level menu with the session still running rather than leaving tm —
 // pickTarget already reset the terminal, and the note keeps the detached
 // session's name in the scrollback above the reopened menu (whose fresh line
 // the notice's trailing newline also provides). Otherwise tm is left for the
-// launching shell ([exit] / Ctrl-D, esc or top-level [detach session]), and the
+// launching shell (/exit / Ctrl-D, esc or top-level /detach-session), and the
 // departure is noted so it stays in the scrollback.
 func noteMenuExit(curName string, toMenu bool) {
 	if toMenu {
@@ -542,7 +542,7 @@ func viewSessionHistory(p config.Paths, id string) string {
 }
 
 // viewHistory pages a session's history in less, connected to the terminal, and
-// returns once the user quits the pager. It is how [history] shows a session's
+// returns once the user quits the pager. It is how /history shows a session's
 // past output, the way `git show` opens its output in a pager: the std.log the
 // daemon records (every line that scrolled off the session's screen), followed
 // by what the screen shows now (see screenSnapshot), so the pager ends where the
@@ -716,7 +716,7 @@ func (g promptGuard) restorePrompt(notices []string) {
 
 // runInSession handles tm launched from inside a session's shell. The menu here
 // drives the outer relay: picking another session asks the current session's
-// daemon to hand that relay over (a switch), while esc or [detach session] just
+// daemon to hand that relay over (a switch), while esc or /detach-session just
 // leaves this inner tm, dropping back into the session. There is no relay to run
 // in this process, so unlike runMenu it never attaches.
 func runInSession(ctrl *controller) error {

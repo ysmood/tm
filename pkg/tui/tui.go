@@ -69,21 +69,21 @@ const (
 	// was launched from within a session, so picking another moves this terminal
 	// there instead of nesting a new relay).
 	ActionSwitch
-	// ActionDetach is the [detach session] command: from within a session it
+	// ActionDetach is the /detach-session command: from within a session it
 	// returns to the top-level menu (the session keeps running); at the top level,
 	// where there is no session to detach from, app.Run leaves tm.
 	ActionDetach
-	// ActionExit is the explicit [exit] command: leave tm from anywhere with every
+	// ActionExit is the explicit /exit command: leave tm from anywhere with every
 	// session still running. Unlike ActionNone (esc/Ctrl-C/Ctrl-D) it never resumes
-	// the current session, so [exit] leaves tm even from a menu opened mid-session.
+	// the current session, so /exit leaves tm even from a menu opened mid-session.
 	ActionExit
-	// ActionKillCurrent is [kill session] aimed at the session this menu is framed
+	// ActionKillCurrent is /kill-session aimed at the session this menu is framed
 	// inside (Result.ID). Unlike killing a background session — done inline while
 	// the menu stays open — ending the current one takes the screen (and, for a tm
 	// run from within the session's shell, this very process) with it, so the menu
 	// quits and app.Run tears the relay down around the kill.
 	ActionKillCurrent
-	// ActionHistory is [history] aimed at Result.ID: page that session's recorded
+	// ActionHistory is /history aimed at Result.ID: page that session's recorded
 	// scrollback log in less, the way `git show` opens its output in a pager.
 	// Unlike a clear — done inline — the pager takes over the whole terminal, so
 	// (like an attach) the menu quits and app.Run runs less after it has torn down,
@@ -122,32 +122,26 @@ type paletteCmd struct {
 	hint string
 }
 
-// palette holds the fixed commands. The bracketed labels are fuzzy-matched like
+// palette holds the fixed commands. The /labels are fuzzy-matched like
 // everything else (see rankItems), so typing the letters of a command in order
-// surfaces it — "ds" finds [detach session], "un" finds [use namespace]. Some
+// surfaces it — "ds" finds /detach-session, "un" finds /use-namespace. Some
 // also carry a direct shortcut (see cmdForKey), shown dimmed beside the label.
 var palette = []paletteCmd{
-	{cmdNewSession, "[new session]", "ctrl+t", "Ctrl-T"},
-	{cmdRenameSession, "[rename session]", "", ""},
-	{cmdKillSession, "[kill session]", "", ""},
-	{cmdHistory, "[history]", "", ""},
-	{cmdClearHistory, "[clear history]", "", ""},
-	{cmdDetachSession, "[detach session]", "ctrl+\\", "Ctrl-\\"},
-	{cmdExit, "[exit]", "", ""},
-	{cmdUseNamespace, "[use namespace]", "ctrl+g", "Ctrl-G"},
-	{cmdDropNamespace, "[drop namespace]", "", ""},
-	{cmdHelp, "[help]", "", ""},
+	{cmdNewSession, "/new-session", "ctrl+t", "Ctrl-T"},
+	{cmdRenameSession, "/rename-session", "", ""},
+	{cmdKillSession, "/kill-session", "", ""},
+	{cmdHistory, "/history", "", ""},
+	{cmdClearHistory, "/clear-history", "", ""},
+	{cmdDetachSession, "/detach-session", "ctrl+\\", "Ctrl-\\"},
+	{cmdExit, "/exit", "", ""},
+	{cmdUseNamespace, "/use-namespace", "ctrl+g", "Ctrl-G"},
+	{cmdDropNamespace, "/drop-namespace", "", ""},
+	{cmdHelp, "/help", "", ""},
 }
-
-// helpPin is the query that always puts [help] first on the main menu. The
-// fuzzy ranking alone favors [clear history] for "h": its "h" starts a word
-// after a space, while [help]'s follows "[", which the matcher doesn't treat
-// as a word boundary.
-const helpPin = "h"
 
 // cmdForKey maps a key press to the palette command it triggers directly, if
 // any. It backs the main-menu shortcuts (see updatePick), so a key like Ctrl-\
-// runs [detach session] without moving the cursor onto it first.
+// runs /detach-session without moving the cursor onto it first.
 func cmdForKey(key string) (cmdID, bool) {
 	for _, c := range palette {
 		if c.key != "" && c.key == key {
@@ -166,9 +160,9 @@ type menuPayload struct {
 	sess  store.Session
 }
 
-// newNamespacePayload is the [use namespace] picker's "create" row: choosing it
+// newNamespacePayload is the /use-namespace picker's "create" row: choosing it
 // makes the typed namespace and switches to it. It folds what was a separate
-// [new namespace] command into [use namespace] — typing a name no namespace has
+// /new-namespace command into /use-namespace — typing a name no namespace has
 // yet surfaces this row (see showNamespaces).
 type newNamespacePayload struct{ name string }
 
@@ -189,7 +183,7 @@ type mode int
 const (
 	modePick  mode = iota // a type-to-filter menu (main, namespace)
 	modeInput             // a free-text prompt
-	modeHelp              // the detailed help screen ([help] command)
+	modeHelp              // the detailed help screen (/help command)
 )
 
 // pickPurpose says what the active picker selects, so Enter dispatches correctly.
@@ -405,9 +399,9 @@ func (m *Model) menuItems() []pickerItem {
 	}
 
 	for _, c := range palette {
-		// [detach session] only makes sense from within a session: at the top level
+		// /detach-session only makes sense from within a session: at the top level
 		// there is nothing to detach from, so the row is dropped and its Ctrl-\ key
-		// acts as [exit] instead (see cmdForKey's caller), advertised on that row.
+		// acts as /exit instead (see cmdForKey's caller), advertised on that row.
 		if c.id == cmdDetachSession && m.curSession == "" {
 			continue
 		}
@@ -418,12 +412,9 @@ func (m *Model) menuItems() []pickerItem {
 			hint:    c.hint,
 			payload: menuPayload{isCmd: true, cmdID: c.id},
 		}
-		if c.id == cmdHelp {
-			item.pin = helpPin
-		}
-		// [exit]'s keys, top level only (esc resumes the session when the menu is
+		// /exit's keys, top level only (esc resumes the session when the menu is
 		// open over one). Ctrl-\ always leaves — with no session to detach from it
-		// falls through to [exit] — and esc and Ctrl-D (VEOF) end the menu on an
+		// falls through to /exit — and esc and Ctrl-D (VEOF) end the menu on an
 		// empty filter, but Ctrl-D is a no-op once a query is typed — so react to
 		// the query and drop it once there is content.
 		if c.id == cmdExit && m.curSession == "" {
@@ -461,8 +452,8 @@ func (m *Model) showMenu() {
 }
 
 // showSessions opens one of the session choosers — the pickers that ask which
-// session a command acts on: [rename session], [kill session], [clear history],
-// [history]. All four list the same thing (every session in the active
+// session a command acts on: /rename-session, /kill-session, /clear-history,
+// /history. All four list the same thing (every session in the active
 // namespace), so they are one picker parameterized by what the pick is for.
 //
 // Unlike the main attach list they keep the session this tm is running inside,
@@ -524,8 +515,8 @@ func (m *Model) showNamespaces(p pickPurpose) {
 
 	m.pick.setItems(items)
 
-	// [use namespace] also creates: typing a name no namespace has yet surfaces a
-	// row that makes it and switches to it, so there is no separate [new namespace]
+	// /use-namespace also creates: typing a name no namespace has yet surfaces a
+	// row that makes it and switches to it, so there is no separate /new-namespace
 	// command. The row tracks the query, so it disappears once the name matches an
 	// existing namespace exactly.
 	if p == pickUseNamespace {
@@ -536,7 +527,7 @@ func (m *Model) showNamespaces(p pickPurpose) {
 			}
 
 			return []pickerItem{{
-				label:   "[new namespace] " + q,
+				label:   "/new-namespace " + q,
 				isCmd:   true,
 				payload: newNamespacePayload{name: q},
 			}}
@@ -668,14 +659,14 @@ const (
 )
 
 func (m Model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// Command shortcuts fire only on the main menu, where the bracketed commands
+	// Command shortcuts fire only on the main menu, where the /commands
 	// live; the scrollback and namespace sub-pickers keep these keys for
 	// navigation and text entry. Checked before the picker sees the key so a
 	// shortcut acts even mid-query (e.g. Ctrl-\ detaches while a filter is typed).
 	if m.pickFor == pickMenu {
 		if id, ok := cmdForKey(msg.String()); ok {
-			// At the top level [detach session] is not offered — there is nothing to
-			// detach from — so its Ctrl-\ runs [exit], the binding the menu advertises
+			// At the top level /detach-session is not offered — there is nothing to
+			// detach from — so its Ctrl-\ runs /exit, the binding the menu advertises
 			// on that row.
 			if id == cmdDetachSession && m.curSession == "" {
 				id = cmdExit
@@ -757,7 +748,7 @@ func (m Model) selectSession(p sessPayload) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// selectNamespace handles a row picked from the [use namespace] chooser: the
+// selectNamespace handles a row picked from the /use-namespace chooser: the
 // create row makes the typed namespace and switches to it, an existing name
 // just switches.
 func (m Model) selectNamespace(payload any) (tea.Model, tea.Cmd) {
@@ -805,7 +796,7 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 		// Detach from the current session back to the top-level menu (the session
 		// keeps running); app.Run carries that out. Reported as ActionDetach — not a
 		// plain cancel — so a menu opened mid-session with Ctrl-\ detaches here while
-		// esc resumes the session. To leave tm entirely, use [exit].
+		// esc resumes the session. To leave tm entirely, use /exit.
 		m.result = Result{Action: ActionDetach}
 		m.quit = true
 
@@ -813,7 +804,7 @@ func (m Model) selectMenu(p menuPayload) (tea.Model, tea.Cmd) {
 	case cmdExit:
 		// Leave tm from anywhere (ActionExit), sessions still running. Distinct from
 		// esc/Ctrl-C/Ctrl-D (ActionNone), which resume the current session when the
-		// menu was opened over one; selecting [exit] leaves tm even from there.
+		// menu was opened over one; selecting /exit leaves tm even from there.
 		m.result = Result{Action: ActionExit}
 		m.quit = true
 
@@ -878,7 +869,7 @@ func (m Model) clearHistory(p sessPayload) (tea.Model, tea.Cmd) {
 	return m, m.printNotice(attach.ClearedHistoryNotice(p.name))
 }
 
-// viewHistory records the [history] pick and quits so app.Run can page the
+// viewHistory records the /history pick and quits so app.Run can page the
 // chosen session's recorded scrollback log in less once the menu has torn down.
 // Like attach it does no work here: the pager takes over the whole terminal, so
 // it can only run after Bubble Tea has released it (see ActionHistory).
@@ -890,7 +881,7 @@ func (m Model) viewHistory(p sessPayload) (tea.Model, tea.Cmd) {
 }
 
 // createNamespace makes ns and switches the active view to it. It backs the
-// [use namespace] picker's create row (choosing a typed name no namespace has
+// /use-namespace picker's create row (choosing a typed name no namespace has
 // yet), so creating and switching are one step.
 func (m Model) createNamespace(ns string) (tea.Model, tea.Cmd) {
 	if err := m.st.CreateNamespace(ns); err != nil {
@@ -1151,7 +1142,7 @@ func padTrunc(s string, w int) string {
 	return s
 }
 
-// viewHelp renders the detailed help reached via the [help] command. It documents
+// viewHelp renders the detailed help reached via the /help command. It documents
 // the keys and what each command does — kept off the main menu so that screen
 // stays uncluttered (see viewPick).
 func (m Model) viewHelp() string {
@@ -1193,16 +1184,16 @@ func (m Model) viewHelp() string {
 
 	section("Commands", [][2]string{
 		{"<session>", switchHint},
-		{"[new session]", "create and start a new session"},
-		{"[rename session]", "rename a session; it keeps running"},
-		{"[kill session]", "end a session's shell and delete it (the current one too)"},
-		{"[clear history]", "wipe a session's recorded scrollback (its log file) — e.g. leaked secrets"},
-		{"[history]", "page a session's recorded scrollback in less (like git show)"},
-		{"[detach session]", "detach back to the menu; the session keeps running (shown inside a session)"},
-		{"[exit]", "leave tm; every session keeps running"},
-		{"[use namespace]", "switch namespace, or type a new name to create one (* shows all)"},
-		{"[drop namespace]", "delete a namespace"},
-		{"[help]", "show this help"},
+		{"/new-session", "create and start a new session"},
+		{"/rename-session", "rename a session; it keeps running"},
+		{"/kill-session", "end a session's shell and delete it (the current one too)"},
+		{"/clear-history", "wipe a session's recorded scrollback (its log file) — e.g. leaked secrets"},
+		{"/history", "page a session's recorded scrollback in less (like git show)"},
+		{"/detach-session", "detach back to the menu; the session keeps running (shown inside a session)"},
+		{"/exit", "leave tm; every session keeps running"},
+		{"/use-namespace", "switch namespace, or type a new name to create one (* shows all)"},
+		{"/drop-namespace", "delete a namespace"},
+		{"/help", "show this help"},
 	})
 
 	version, repo := buildInfo()

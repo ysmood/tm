@@ -686,7 +686,7 @@ func TestDetachThenReattach(t *testing.T) {
 // A program redrawing a block in place — an inline TUI erasing its lines and
 // moving the cursor up, frame after frame — leaves nothing in the log: the
 // shadow screen sees the block repainted where it was, and nothing scrolled
-// off. The screen itself, which [history] pages after the log (MsgScreen),
+// off. The screen itself, which /history pages after the log (MsgScreen),
 // shows only the final frame.
 func TestRedrawingProgramRecordsNothing(t *testing.T) {
 	g, st, p := setupDaemon(t)

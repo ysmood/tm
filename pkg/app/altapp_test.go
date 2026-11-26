@@ -31,7 +31,7 @@ func (tm *term) menuVia(key string) {
 
 // TestMenuKeyAfterReattachIntoFullScreenApp: detach from a session running a
 // full-screen app, re-attach (the replay restores the app's alt screen and
-// modes), then press Ctrl-\ — the menu must still open and [detach session]
+// modes), then press Ctrl-\ — the menu must still open and /detach-session
 // must still work. This terminal sends the legacy 0x1c, as one without the
 // kitty protocol would.
 func TestMenuKeyAfterReattachIntoFullScreenApp(t *testing.T) {

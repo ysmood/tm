@@ -197,7 +197,7 @@ func TestModelNewSessionAttachesImmediately(t *testing.T) {
 	g := got.T(t)
 	m := New(newStore(g, t), fakeCtrl{})
 
-	m = send(m, keyEnterMsg) // empty store: cursor sits on [new session] -> name prompt
+	m = send(m, keyEnterMsg) // empty store: cursor sits on /new-session -> name prompt
 	g.Eq(m.mode, modeInput)
 
 	next, cmd := m.Update(keyEnterMsg) // submit the default name
@@ -211,7 +211,7 @@ func TestModelNewSessionAttachesImmediately(t *testing.T) {
 	g.Eq(res.ID, "id") // fakeCtrl.CreateAndSpawn
 }
 
-// [rename session] picks a session, prefills its name, and writes the new one to
+// /rename-session picks a session, prefills its name, and writes the new one to
 // the store. The session keeps running — the menu just returns to the main list,
 // which now shows the new name — and the rename is printed above the menu, where
 // it stays in the scrollback.
@@ -225,7 +225,7 @@ func TestModelRenameSession(t *testing.T) {
 	m := New(st, fakeCtrl{})
 
 	m = typeStr(m, "rs")
-	m = send(m, keyEnterMsg) // [rename session] -> the session chooser
+	m = send(m, keyEnterMsg) // /rename-session -> the session chooser
 	g.Eq(m.pickFor, pickRenameSession)
 
 	m = send(m, keyEnterMsg) // the only session
@@ -348,7 +348,7 @@ func TestModelRenameSessionNoSessions(t *testing.T) {
 	g.Has(m.headerTitle(), "no sessions to rename")
 }
 
-// [kill session] picks a session and ends it: the controller kills it, the menu
+// /kill-session picks a session and ends it: the controller kills it, the menu
 // returns to the main list — which no longer shows it — and the kill is printed
 // above the menu, where it stays in the scrollback.
 func TestModelKillSession(t *testing.T) {
@@ -359,7 +359,7 @@ func TestModelKillSession(t *testing.T) {
 	m := New(st, killCtrl{st: st})
 
 	m = typeStr(m, "ks")
-	m = send(m, keyEnterMsg) // [kill session] -> the session chooser
+	m = send(m, keyEnterMsg) // /kill-session -> the session chooser
 	g.Eq(m.pickFor, pickKillSession)
 
 	next, cmd := m.Update(keyEnterMsg) // the only session
@@ -502,7 +502,7 @@ func (c sessClearCtrl) ClearHistory(id string) error {
 	return nil
 }
 
-// [clear history] picks a session and wipes its recorded scrollback: the
+// /clear-history picks a session and wipes its recorded scrollback: the
 // controller clears it, the session stays running (and listed), and the wipe is
 // printed above the menu, where it stays in the scrollback.
 func TestModelClearHistory(t *testing.T) {
@@ -515,7 +515,7 @@ func TestModelClearHistory(t *testing.T) {
 	m := New(st, clearCtrl{cleared: &cleared})
 
 	m = typeStr(m, "ch")
-	m = send(m, keyEnterMsg) // [clear history] -> the session chooser
+	m = send(m, keyEnterMsg) // /clear-history -> the session chooser
 	g.Eq(m.pickFor, pickClearHistory)
 
 	next, cmd := m.Update(keyEnterMsg) // the only session
@@ -612,7 +612,7 @@ func TestModelClearHistoryNoSessions(t *testing.T) {
 	g.Has(m.headerTitle(), "no sessions to clear")
 }
 
-// [history] picks a session and resolves to ActionHistory so app.Run can page
+// /history picks a session and resolves to ActionHistory so app.Run can page
 // its recorded scrollback in less once the menu has torn down. Unlike a clear it
 // quits the menu (the pager needs the whole terminal) and touches no controller.
 func TestModelHistory(t *testing.T) {
@@ -622,8 +622,8 @@ func TestModelHistory(t *testing.T) {
 
 	m := New(st, fakeCtrl{})
 
-	m = typeStr(m, "[history")
-	m = send(m, keyEnterMsg) // [history] -> the session chooser
+	m = typeStr(m, "/history")
+	m = send(m, keyEnterMsg) // /history -> the session chooser
 	g.Eq(m.pickFor, pickHistory)
 
 	next, cmd := m.Update(keyEnterMsg) // the only session
@@ -643,7 +643,7 @@ func TestModelHistoryCurrentSession(t *testing.T) {
 	g.E(st.SaveSession(store.Session{ID: curID, Name: curName, Namespace: store.DefaultNamespace}))
 
 	m := New(st, sessCtrl{id: curID, name: curName})
-	m = send(typeStr(m, "[history"), keyEnterMsg)
+	m = send(typeStr(m, "/history"), keyEnterMsg)
 
 	g.Eq(m.pickFor, pickHistory)
 	g.Len(m.pick.all, 1) // the current session is listed, marked
@@ -654,12 +654,12 @@ func TestModelHistoryCurrentSession(t *testing.T) {
 	g.Eq(it.hint, currentHint)
 }
 
-// With no sessions in the namespace [history] says so instead of opening an
+// With no sessions in the namespace /history says so instead of opening an
 // empty chooser.
 func TestModelHistoryNoSessions(t *testing.T) {
 	g := got.T(t)
 
-	m := send(typeStr(New(newStore(g, t), fakeCtrl{}), "[history"), keyEnterMsg)
+	m := send(typeStr(New(newStore(g, t), fakeCtrl{}), "/history"), keyEnterMsg)
 	g.Eq(m.pickFor, pickMenu)
 	g.Has(m.headerTitle(), "no sessions to view")
 }
@@ -671,7 +671,7 @@ func mustGet(g got.G, st *store.Store, id string) store.Session {
 	return s
 }
 
-// Selecting [detach session] from a menu framed inside a session quits it via
+// Selecting /detach-session from a menu framed inside a session quits it via
 // ActionDetach; app.Run then returns to the top-level menu (the session keeps
 // running). The dedicated action lets a menu opened mid-session with Ctrl-\
 // tell "detach to the menu" apart from a plain esc, which resumes the session.
@@ -690,26 +690,26 @@ func TestModelDetachSessionQuits(t *testing.T) {
 	g.True(ok)
 }
 
-// The top-level menu offers no [detach session] — there is no session to detach
-// from, and leaving tm is [exit]'s job — while a menu framed inside a session
+// The top-level menu offers no /detach-session — there is no session to detach
+// from, and leaving tm is /exit's job — while a menu framed inside a session
 // keeps the row.
 func TestModelDetachHiddenAtTopLevel(t *testing.T) {
 	g := got.T(t)
 
 	top := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
-	g.True(!strings.Contains(top.View().Content, "[detach session]"))
+	g.True(!strings.Contains(top.View().Content, "/detach-session"))
 
 	in := send(New(newStore(g, t), sessCtrl{id: curID, name: curName}), tea.WindowSizeMsg{Width: 80, Height: 24})
-	g.Has(in.View().Content, "[detach session]")
+	g.Has(in.View().Content, "/detach-session")
 }
 
-// [exit] leaves tm from anywhere via ActionExit, selected from the list. Unlike
+// /exit leaves tm from anywhere via ActionExit, selected from the list. Unlike
 // ActionNone (esc/Ctrl-C/Ctrl-D) it exits even from a menu opened over a session,
 // where those keys resume instead.
 func TestModelExitCommand(t *testing.T) {
 	g := got.T(t)
 
-	// Fuzzy-select [exit] from the list.
+	// Fuzzy-select /exit from the list.
 	m := typeStr(New(newStore(g, t), fakeCtrl{}), "exit")
 	next, cmd := m.Update(keyEnterMsg)
 
@@ -746,10 +746,10 @@ func TestModelCtrlDIsEOF(t *testing.T) {
 	g.True(!sub.quit)
 }
 
-// [exit]'s hint reacts to the filter: on an empty query Ctrl-\, esc and Ctrl-D
+// /exit's hint reacts to the filter: on an empty query Ctrl-\, esc and Ctrl-D
 // (EOF) all end the menu, so all are shown; once a query is typed Ctrl-D is a
 // no-op, so Ctrl-\ and esc remain. Opened over a session, esc/Ctrl-D resume and
-// Ctrl-\ belongs to [detach session], so no hint at all.
+// Ctrl-\ belongs to /detach-session, so no hint at all.
 func TestModelExitHintReactive(t *testing.T) {
 	g := got.T(t)
 
@@ -757,10 +757,10 @@ func TestModelExitHintReactive(t *testing.T) {
 	m := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
 	g.Has(m.View().Content, "Ctrl-\\, esc or Ctrl-D")
 
-	// Typing hides Ctrl-D's EOF, leaving Ctrl-\ and esc on the [exit] row.
+	// Typing hides Ctrl-D's EOF, leaving Ctrl-\ and esc on the /exit row.
 	m = typeStr(m, "exit")
 	v := m.View().Content
-	g.Has(v, "[exit]")
+	g.Has(v, "/exit")
 	g.Has(v, "Ctrl-\\ or esc")
 	g.True(!strings.Contains(v, "Ctrl-D"))
 
@@ -771,30 +771,30 @@ func TestModelExitHintReactive(t *testing.T) {
 	m = send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	g.Has(m.View().Content, "Ctrl-\\, esc or Ctrl-D")
 
-	// Opened over a session, esc and Ctrl-D resume, so [exit] shows no key hint.
+	// Opened over a session, esc and Ctrl-D resume, so /exit shows no key hint.
 	inSess := send(
 		New(newStore(g, t), sessCtrl{id: curID, name: curName}),
 		tea.WindowSizeMsg{Width: 80, Height: 24},
 	).View().Content
-	g.Has(inSess, "[exit]")
+	g.Has(inSess, "/exit")
 	g.True(!strings.Contains(inSess, "esc"))
 	g.True(!strings.Contains(inSess, "Ctrl-D"))
 }
 
-// The main menu carries direct shortcuts: Ctrl-\ runs [detach session] (or
-// [exit] at the top level, where there is nothing to detach from), Ctrl-T runs
-// [new session] and Ctrl-G runs [use namespace], so the common commands are one
+// The main menu carries direct shortcuts: Ctrl-\ runs /detach-session (or
+// /exit at the top level, where there is nothing to detach from), Ctrl-T runs
+// /new-session and Ctrl-G runs /use-namespace, so the common commands are one
 // keystroke away without moving the cursor onto them.
 func TestModelCommandShortcuts(t *testing.T) {
 	g := got.T(t)
 
-	// Ctrl-\ at the top level leaves tm like selecting [exit] — the binding the
-	// menu advertises on that row, since [detach session] is not offered there.
+	// Ctrl-\ at the top level leaves tm like selecting /exit — the binding the
+	// menu advertises on that row, since /detach-session is not offered there.
 	top := send(New(newStore(g, t), fakeCtrl{}), ctrlKey('\\'))
 	g.True(top.quit)
 	g.Eq(top.Result().Action, ActionExit)
 
-	// Inside a session Ctrl-\ detaches (like selecting [detach session]).
+	// Inside a session Ctrl-\ detaches (like selecting /detach-session).
 	detach := send(New(newStore(g, t), sessCtrl{id: curID, name: curName}), ctrlKey('\\'))
 	g.True(detach.quit)
 	g.Eq(detach.Result().Action, ActionDetach)
@@ -818,7 +818,7 @@ func TestModelShortcutsMainMenuOnly(t *testing.T) {
 	m := New(newStore(g, t), fakeCtrl{})
 
 	m = typeStr(m, "un")
-	m = send(m, keyEnterMsg) // into the [use namespace] sub-picker
+	m = send(m, keyEnterMsg) // into the /use-namespace sub-picker
 	g.Eq(m.pickFor, pickUseNamespace)
 
 	m = send(m, ctrlKey('\\')) // Ctrl-\ here must not detach
@@ -827,56 +827,56 @@ func TestModelShortcutsMainMenuOnly(t *testing.T) {
 }
 
 // Each shortcut command shows its key hint beside the label on the main menu.
-// At the top level [detach session] is hidden, so Ctrl-\ is advertised on
-// [exit]; inside a session it sits on the [detach session] row.
+// At the top level /detach-session is hidden, so Ctrl-\ is advertised on
+// /exit; inside a session it sits on the /detach-session row.
 func TestModelShortcutHintsRendered(t *testing.T) {
 	g := got.T(t)
 	m := send(New(newStore(g, t), fakeCtrl{}), tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	v := m.View().Content
-	g.Has(v, "Ctrl-T")  // [new session]
-	g.Has(v, "Ctrl-\\") // [exit] (top level: Ctrl-\, esc or Ctrl-D)
-	g.Has(v, "Ctrl-G")  // [use namespace]
+	g.Has(v, "Ctrl-T")  // /new-session
+	g.Has(v, "Ctrl-\\") // /exit (top level: Ctrl-\, esc or Ctrl-D)
+	g.Has(v, "Ctrl-G")  // /use-namespace
 
 	in := send(New(newStore(g, t), sessCtrl{id: curID, name: curName}), tea.WindowSizeMsg{Width: 80, Height: 24})
-	g.Has(in.View().Content, "Ctrl-\\") // [detach session]
+	g.Has(in.View().Content, "Ctrl-\\") // /detach-session
 }
 
 // The focused row's shortcut highlights with the row: its hint renders in the
 // selection style, while other rows' hints stay in the dim key style. Moving the
 // cursor flips which hint is highlighted. Framed inside a session, since that is
-// where the [detach session] row (and its Ctrl-\ hint) exists.
+// where the /detach-session row (and its Ctrl-\ hint) exists.
 func TestModelShortcutHintHighlightsOnFocus(t *testing.T) {
 	g := got.T(t)
 	th := styles()
 	m := send(New(newStore(g, t), sessCtrl{id: curID, name: curName}), tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	// The cursor starts on [new session], so its Ctrl-T is highlighted while
-	// [detach session]'s Ctrl-\ stays dim.
+	// The cursor starts on /new-session, so its Ctrl-T is highlighted while
+	// /detach-session's Ctrl-\ stays dim.
 	v := m.View().Content
 	g.Has(v, th.sel.Render("Ctrl-T"))
 	g.Has(v, th.key.Render(`Ctrl-\`))
 
-	// Down past [rename session], [kill session], [clear history] and [history]
-	// onto [detach session]: now its Ctrl-\ is highlighted and Ctrl-T is dim.
+	// Down past /rename-session, /kill-session, /clear-history and /history
+	// onto /detach-session: now its Ctrl-\ is highlighted and Ctrl-T is dim.
 	v = send(send(send(send(send(m, keyDownMsg), keyDownMsg), keyDownMsg), keyDownMsg), keyDownMsg).View().Content
 	g.Has(v, th.sel.Render(`Ctrl-\`))
 	g.Has(v, th.key.Render("Ctrl-T"))
 }
 
-// Selecting [help] opens the detailed help screen; any key dismisses it back to
+// Selecting /help opens the detailed help screen; any key dismisses it back to
 // the main menu. The key hints live here rather than cluttering every frame.
 func TestModelHelpScreen(t *testing.T) {
 	g := got.T(t)
 	m := New(newStore(g, t), fakeCtrl{})
 
-	m = typeStr(m, "help") // only [help] fuzzy-matches "help"
+	m = typeStr(m, "help") // only /help fuzzy-matches "help"
 	m = send(m, keyEnterMsg)
 	g.Eq(m.mode, modeHelp)
 
 	v := m.View().Content
 	g.Has(v, "tm — help")
-	g.Has(v, "[new session]")
+	g.Has(v, "/new-session")
 	g.Has(v, "press any key to go back")
 
 	m = send(m, keyEnterMsg) // any key returns to the menu
@@ -884,31 +884,31 @@ func TestModelHelpScreen(t *testing.T) {
 	g.Eq(m.pickFor, pickMenu)
 }
 
-// Typing just "h" opens [help], even with a session whose name starts with "h"
-// that the fuzzy ranking alone would put first — ahead of [clear history] too.
+// Typing just "h" opens /help — ahead of /clear-history, and of a session
+// whose name starts with "h".
 func TestModelHOpensHelp(t *testing.T) {
 	g := got.T(t)
 	st := newStore(g, t)
 	g.E(st.SaveSession(store.Session{ID: "s1", Name: "hello", Namespace: store.DefaultNamespace}))
 
-	m := send(typeStr(New(st, fakeCtrl{}), helpPin), keyEnterMsg)
+	m := send(typeStr(New(st, fakeCtrl{}), "h"), keyEnterMsg)
 	g.Eq(m.mode, modeHelp)
 }
 
-// [use namespace] also creates: typing a name no namespace has yet surfaces a
+// /use-namespace also creates: typing a name no namespace has yet surfaces a
 // create row that makes it and switches to it.
 func TestModelCreateNamespace(t *testing.T) {
 	g := got.T(t)
 	m := New(newStore(g, t), fakeCtrl{})
 
 	m = typeStr(m, "un")
-	m = send(m, keyEnterMsg) // select [use namespace] -> namespace picker
+	m = send(m, keyEnterMsg) // select /use-namespace -> namespace picker
 	g.Eq(m.pickFor, pickUseNamespace)
 
-	// "work" matches no existing namespace, so the only row is "[new namespace]
+	// "work" matches no existing namespace, so the only row is "/new-namespace
 	// work"; select it to create and switch.
 	m = typeStr(m, nsWork)
-	g.Has(m.View().Content, "[new namespace] work")
+	g.Has(m.View().Content, "/new-namespace work")
 
 	m = send(m, keyEnterMsg)
 	g.Eq(m.ns, nsWork)
@@ -927,7 +927,7 @@ func TestModelUseNamespace(t *testing.T) {
 	m := New(st, fakeCtrl{})
 
 	m = typeStr(m, "un")
-	m = send(m, keyEnterMsg) // select [use namespace] -> namespace picker
+	m = send(m, keyEnterMsg) // select /use-namespace -> namespace picker
 	g.Eq(m.mode, modePick)
 	g.Eq(m.pickFor, pickUseNamespace)
 
@@ -949,7 +949,7 @@ func TestModelDropNamespace(t *testing.T) {
 	m.ns = nsWork
 
 	m = typeStr(m, "dn")
-	m = send(m, keyEnterMsg) // select [drop namespace] -> namespace picker
+	m = send(m, keyEnterMsg) // select /drop-namespace -> namespace picker
 	g.Eq(m.mode, modePick)
 	g.Eq(m.pickFor, pickDropNamespace)
 
